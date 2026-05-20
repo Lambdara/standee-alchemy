@@ -879,6 +879,7 @@
       const free = page.free[freeIndex];
       const orientations = [{ rotated: false, width: box.width, height: box.height }];
       if (allowRotate && Math.abs(box.width - box.height) > EPS) {
+        // noinspection JSSuspiciousNameCombination
         orientations.push({ rotated: true, width: box.height, height: box.width });
       }
 
