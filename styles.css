@@ -116,7 +116,8 @@ button:disabled {
 .status,
 .meta,
 .layout-summary,
-.empty-state {
+.empty-state,
+.drop-zone span {
   color: var(--muted);
 }
 
@@ -221,6 +222,38 @@ button:focus-visible,
   gap: 0.75rem;
 }
 
+.drop-zone {
+  display: grid;
+  min-height: 96px;
+  place-items: center;
+  gap: 0.25rem;
+  margin-bottom: 0.75rem;
+  border: 1px dashed var(--line-strong);
+  border-radius: 8px;
+  background: #f8fbfa;
+  color: var(--ink);
+  cursor: pointer;
+  text-align: center;
+  transition: background 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.drop-zone:hover,
+.drop-zone:focus-visible,
+.drop-zone.is-dragging {
+  border-color: var(--accent);
+  background: #eef8f7;
+  box-shadow: inset 0 0 0 1px rgb(18 111 131 / 20%);
+  outline: none;
+}
+
+.drop-zone strong {
+  font-size: 0.94rem;
+}
+
+.drop-zone span {
+  font-size: 0.82rem;
+}
+
 .empty-state {
   display: grid;
   min-height: 160px;
@@ -310,7 +343,7 @@ button:focus-visible,
 
 .width-row {
   display: grid;
-  grid-template-columns: minmax(100px, 150px) minmax(0, 1fr);
+  grid-template-columns: minmax(100px, 145px) minmax(76px, 92px) minmax(0, 1fr);
   align-items: end;
   gap: 0.75rem;
 }

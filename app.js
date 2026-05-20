@@ -1,10 +1,7 @@
 (() => {
   "use strict";
 
-  const PAGE_SIZES = {
-    letter: { key: "letter", label: "Letter", width: 8.5, height: 11 },
-    a4: { key: "a4", label: "A4", width: 8.27, height: 11.69 },
-  };
+  const A4_PAGE = { key: "a4", label: "A4", width: 8.27, height: 11.69 };
 
   const WIDTH_OPTIONS = [
     { value: 0.5, label: "1/2 inch" },
@@ -28,7 +25,6 @@
     generatePdf: document.querySelector("#generatePdf"),
     itemCount: document.querySelector("#itemCount"),
     defaultWidth: document.querySelector("#defaultWidth"),
-    pageSize: document.querySelector("#pageSize"),
     margin: document.querySelector("#margin"),
     spacing: document.querySelector("#spacing"),
     renderDpi: document.querySelector("#renderDpi"),
@@ -36,6 +32,7 @@
     drawGuides: document.querySelector("#drawGuides"),
     applyWidth: document.querySelector("#applyWidth"),
     clearAll: document.querySelector("#clearAll"),
+    dropZone: document.querySelector("#dropZone"),
     itemList: document.querySelector("#itemList"),
     status: document.querySelector("#status"),
     layoutSummary: document.querySelector("#layoutSummary"),
@@ -45,16 +42,41 @@
 
   els.chooseFiles.addEventListener("click", () => els.imageInput.click());
   els.imageInput.addEventListener("change", handleFilesChosen);
+  els.dropZone.addEventListener("click", () => els.imageInput.click());
+  els.dropZone.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    els.imageInput.click();
+  });
+  els.dropZone.addEventListener("dragenter", handleDragEnter);
+  els.dropZone.addEventListener("dragover", handleDragOver);
+  els.dropZone.addEventListener("dragleave", handleDragLeave);
+  els.dropZone.addEventListener("drop", handleDrop);
   els.generatePdf.addEventListener("click", handleGeneratePdf);
   els.applyWidth.addEventListener("click", applyDefaultWidthToAll);
   els.clearAll.addEventListener("click", clearAllItems);
 
   els.itemList.addEventListener("change", (event) => {
     const select = event.target.closest("[data-width-select]");
-    if (!select) return;
-    const item = findItem(select.dataset.itemId);
+    if (select) {
+      const item = findItem(select.dataset.itemId);
+      if (!item) return;
+      item.widthInches = Number(select.value);
+      resetPdfLink();
+      render();
+      return;
+    }
+
+    const quantityInput = event.target.closest("[data-quantity-input]");
+    if (!quantityInput) return;
+    const item = findItem(quantityInput.dataset.itemId);
     if (!item) return;
-    item.widthInches = Number(select.value);
+    const quantity = readQuantity(quantityInput.value);
+    if (quantity === 0) {
+      removeItem(item.id);
+      return;
+    }
+    item.quantity = quantity;
     resetPdfLink();
     render();
   });
@@ -65,7 +87,7 @@
     removeItem(button.dataset.removeItem);
   });
 
-  [els.pageSize, els.margin, els.spacing, els.allowRotate, els.drawGuides].forEach((control) => {
+  [els.margin, els.spacing, els.allowRotate, els.drawGuides].forEach((control) => {
     control.addEventListener("change", () => {
       resetPdfLink();
       render();
@@ -80,8 +102,49 @@
   render();
 
   async function handleFilesChosen(event) {
-    const files = Array.from(event.target.files || []).filter((file) => file.type.startsWith("image/"));
+    await addFiles(event.target.files || []);
     event.target.value = "";
+  }
+
+  async function handleDrop(event) {
+    event.preventDefault();
+    setDropActive(false);
+    await addFiles(event.dataTransfer ? event.dataTransfer.files : []);
+  }
+
+  function handleDragEnter(event) {
+    if (!hasFileDrag(event)) return;
+    event.preventDefault();
+    setDropActive(true);
+  }
+
+  function handleDragOver(event) {
+    if (!hasFileDrag(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    setDropActive(true);
+  }
+
+  function handleDragLeave(event) {
+    if (els.dropZone.contains(event.relatedTarget)) return;
+    setDropActive(false);
+  }
+
+  function hasFileDrag(event) {
+    return Array.from(event.dataTransfer ? event.dataTransfer.types : []).includes("Files");
+  }
+
+  function setDropActive(active) {
+    els.dropZone.classList.toggle("is-dragging", active);
+  }
+
+  async function addFiles(fileList) {
+    const incoming = Array.from(fileList || []);
+    const files = incoming.filter((file) => file.type.startsWith("image/"));
+    if (incoming.length > 0 && files.length === 0) {
+      setStatus(`Skipped ${incoming.length} file(s). Add image files only.`, "error");
+      return;
+    }
     if (files.length === 0) return;
 
     resetPdfLink();
@@ -98,8 +161,10 @@
     }
 
     render();
-    if (failures.length > 0) {
-      setStatus(`Skipped ${failures.length} file(s). ${failures.join(" ")}`, "error");
+    const skipped = incoming.length - files.length + failures.length;
+    if (skipped > 0) {
+      const decodeFailures = failures.length > 0 ? ` ${failures.join(" ")}` : "";
+      setStatus(`Skipped ${skipped} file(s).${decodeFailures}`, "error");
     }
   }
 
@@ -125,6 +190,7 @@
           naturalWidth: image.naturalWidth,
           naturalHeight: image.naturalHeight,
           widthInches: Number(els.defaultWidth.value),
+          quantity: 1,
         });
       };
 
@@ -167,6 +233,20 @@
 
   function findItem(itemId) {
     return state.items.find((item) => item.id === itemId);
+  }
+
+  function getQuantity(item) {
+    return readQuantity(item.quantity);
+  }
+
+  function readQuantity(value) {
+    const quantity = Math.floor(Number(value));
+    if (!Number.isFinite(quantity) || quantity < 0) return 1;
+    return Math.min(quantity, 999);
+  }
+
+  function getTotalQuantity() {
+    return state.items.reduce((total, item) => total + getQuantity(item), 0);
   }
 
   function render() {
@@ -246,7 +326,20 @@
       size.className = "size-pill";
       size.textContent = `${formatInches(metrics.width)} x ${formatInches(metrics.totalHeight)} final`;
 
-      widthRow.append(widthLabel, size);
+      const quantityLabel = document.createElement("label");
+      const quantityText = document.createElement("span");
+      quantityText.textContent = "Quantity";
+      const quantityInput = document.createElement("input");
+      quantityInput.type = "number";
+      quantityInput.min = "0";
+      quantityInput.max = "999";
+      quantityInput.step = "1";
+      quantityInput.value = String(getQuantity(item));
+      quantityInput.dataset.quantityInput = "true";
+      quantityInput.dataset.itemId = item.id;
+      quantityLabel.append(quantityText, quantityInput);
+
+      widthRow.append(widthLabel, quantityLabel, size);
       details.append(titleRow, meta, widthRow);
       card.append(preview, details);
       fragment.append(card);
@@ -281,9 +374,10 @@
     }
 
     els.generatePdf.disabled = false;
-    const pieceWord = state.items.length === 1 ? "piece" : "pieces";
+    const pieceCount = getTotalQuantity();
+    const pieceWord = pieceCount === 1 ? "piece" : "pieces";
     const pageWord = layout.pages.length === 1 ? "page" : "pages";
-    setStatus(`${state.items.length} ${pieceWord} packed on ${layout.pages.length} ${pageWord}.`);
+    setStatus(`${pieceCount} ${pieceWord} packed on ${layout.pages.length} ${pageWord}.`);
     els.layoutSummary.textContent =
       `Printable area: ${formatInches(layout.usableWidth)} x ${formatInches(layout.usableHeight)}. ` +
       `Render: ${settings.renderDpi} DPI.`;
@@ -337,7 +431,9 @@
         box.style.width = `${(placement.width / page.width) * 100}%`;
         box.style.height = `${(placement.height / page.height) * 100}%`;
         const label = document.createElement("span");
-        label.textContent = placement.rotated ? `${itemIndex} R` : String(itemIndex);
+        const copyLabel =
+          getQuantity(placement.item) > 1 ? `${itemIndex}.${placement.copyNumber}` : String(itemIndex);
+        label.textContent = placement.rotated ? `${copyLabel} R` : copyLabel;
         box.append(label);
         sheet.append(box);
       }
@@ -401,9 +497,8 @@
   }
 
   function readSettings() {
-    const page = PAGE_SIZES[els.pageSize.value] || PAGE_SIZES.letter;
     return {
-      page,
+      page: A4_PAGE,
       margin: clamp(readNumber(els.margin, 0.25), 0, 1.5),
       spacing: clamp(readNumber(els.spacing, 0.05), 0, 0.5),
       renderDpi: clamp(Math.round(readNumber(els.renderDpi, 225)), 72, 600),
@@ -421,17 +516,19 @@
     const width = item.widthInches;
     const imageHeight = width * (item.naturalHeight / item.naturalWidth);
     const innerFlap = width / 2;
-    const totalHeight = 0.5 + innerFlap + imageHeight + imageHeight + innerFlap + 0.5;
+    const outerFlap = Math.min(0.5, width / 4);
+    const totalHeight = outerFlap + innerFlap + imageHeight + imageHeight + innerFlap + outerFlap;
 
     return {
       width,
       imageHeight,
       innerFlap,
+      outerFlap,
       totalHeight,
-      copyY: 0.5 + innerFlap,
-      originalY: 0.5 + innerFlap + imageHeight,
-      bottomInnerY: 0.5 + innerFlap + imageHeight + imageHeight,
-      bottomOuterY: 0.5 + innerFlap + imageHeight + imageHeight + innerFlap,
+      copyY: outerFlap + innerFlap,
+      originalY: outerFlap + innerFlap + imageHeight,
+      bottomInnerY: outerFlap + innerFlap + imageHeight + imageHeight,
+      bottomOuterY: outerFlap + innerFlap + imageHeight + imageHeight + innerFlap,
     };
   }
 
@@ -502,8 +599,8 @@
     ctx.strokeStyle = "#6f7a76";
     ctx.setLineDash([0.075, 0.045]);
     [
-      0.5,
-      0.5 + metrics.innerFlap,
+      metrics.outerFlap,
+      metrics.outerFlap + metrics.innerFlap,
       metrics.originalY,
       metrics.bottomInnerY,
       metrics.bottomOuterY,
@@ -564,15 +661,20 @@
       };
     }
 
-    const boxes = items.map((item, index) => {
+    const boxes = [];
+    items.forEach((item, index) => {
       const metrics = getMetrics(item);
-      return {
-        item,
-        index,
-        width: metrics.width,
-        height: metrics.totalHeight,
-        area: metrics.width * metrics.totalHeight,
-      };
+      const quantity = getQuantity(item);
+      for (let copyIndex = 0; copyIndex < quantity; copyIndex += 1) {
+        boxes.push({
+          item,
+          index,
+          copyNumber: copyIndex + 1,
+          width: metrics.width,
+          height: metrics.totalHeight,
+          area: metrics.width * metrics.totalHeight,
+        });
+      }
     });
 
     const impossible = boxes.filter((box) => {
@@ -699,6 +801,7 @@
     page.free = pruneFreeRects(nextFree);
     page.placements.push({
       item: box.item,
+      copyNumber: box.copyNumber,
       x: placement.x,
       y: placement.y,
       width: placement.width,
