@@ -12,6 +12,9 @@
   ];
 
   const EPS = 1e-6;
+  const PRINT_JPEG_QUALITY = 0.96;
+  const PRINT_SHARPEN_AMOUNT = 0.42;
+  const MAX_SHARPEN_PIXELS = 16000000;
 
   const state = {
     items: [],
@@ -548,20 +551,23 @@
     canvas.style.height = `${Math.max(1, Math.round(metrics.totalHeight * cssPixelsPerInch))}px`;
   }
 
-  function renderStandeeCanvas(item, canvas, pixelsPerInch, guides) {
+  function renderStandeeCanvas(item, canvas, pixelsPerInch, guides, options = {}) {
     const metrics = getMetrics(item);
     const pixelWidth = Math.max(1, Math.ceil(metrics.width * pixelsPerInch));
     const pixelHeight = Math.max(1, Math.ceil(metrics.totalHeight * pixelsPerInch));
+    const imageSource = options.enhanceResize
+      ? createPrintImageCanvas(item, metrics, pixelsPerInch)
+      : item.image;
 
     canvas.width = pixelWidth;
     canvas.height = pixelHeight;
 
     const ctx = canvas.getContext("2d", { alpha: false });
     ctx.setTransform(pixelsPerInch, 0, 0, pixelsPerInch, 0, 0);
-    drawStandee(ctx, item, metrics, guides, pixelsPerInch);
+    drawStandee(ctx, imageSource, metrics, guides, pixelsPerInch);
   }
 
-  function drawStandee(ctx, item, metrics, guides, pixelsPerInch) {
+  function drawStandee(ctx, imageSource, metrics, guides, pixelsPerInch) {
     const width = metrics.width;
     const imageHeight = metrics.imageHeight;
 
@@ -574,16 +580,123 @@
     ctx.save();
     ctx.translate(width, metrics.copyY + imageHeight);
     ctx.rotate(Math.PI);
-    ctx.drawImage(item.image, 0, 0, width, imageHeight);
+    ctx.drawImage(imageSource, 0, 0, width, imageHeight);
     ctx.restore();
 
-    ctx.drawImage(item.image, 0, metrics.originalY, width, imageHeight);
+    ctx.drawImage(imageSource, 0, metrics.originalY, width, imageHeight);
 
     if (guides) {
       drawGuides(ctx, metrics, pixelsPerInch);
     }
 
     ctx.restore();
+  }
+
+  function createPrintImageCanvas(item, metrics, pixelsPerInch) {
+    const targetWidth = Math.max(1, Math.round(metrics.width * pixelsPerInch));
+    const targetHeight = Math.max(1, Math.round(metrics.imageHeight * pixelsPerInch));
+    const canvas = resizeImageToCanvas(
+      item.image,
+      item.naturalWidth,
+      item.naturalHeight,
+      targetWidth,
+      targetHeight
+    );
+    const isDownscaled = targetWidth < item.naturalWidth || targetHeight < item.naturalHeight;
+
+    if (isDownscaled && targetWidth * targetHeight <= MAX_SHARPEN_PIXELS) {
+      sharpenCanvas(canvas, PRINT_SHARPEN_AMOUNT);
+    }
+
+    return canvas;
+  }
+
+  function resizeImageToCanvas(source, sourceWidth, sourceHeight, targetWidth, targetHeight) {
+    let currentSource = source;
+    let currentWidth = sourceWidth;
+    let currentHeight = sourceHeight;
+    let temporaryCanvas = null;
+
+    while (currentWidth > targetWidth * 2 && currentHeight > targetHeight * 2) {
+      const nextWidth = Math.max(targetWidth, Math.round(currentWidth / 2));
+      const nextHeight = Math.max(targetHeight, Math.round(currentHeight / 2));
+      const nextCanvas = makeImageCanvas(nextWidth, nextHeight);
+
+      drawImageIntoCanvas(currentSource, nextCanvas);
+
+      if (temporaryCanvas) {
+        temporaryCanvas.width = 1;
+        temporaryCanvas.height = 1;
+      }
+
+      temporaryCanvas = nextCanvas;
+      currentSource = nextCanvas;
+      currentWidth = nextWidth;
+      currentHeight = nextHeight;
+    }
+
+    const output = makeImageCanvas(targetWidth, targetHeight);
+    drawImageIntoCanvas(currentSource, output);
+
+    if (temporaryCanvas) {
+      temporaryCanvas.width = 1;
+      temporaryCanvas.height = 1;
+    }
+
+    return output;
+  }
+
+  function makeImageCanvas(width, height) {
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    return canvas;
+  }
+
+  function drawImageIntoCanvas(source, canvas) {
+    const ctx = canvas.getContext("2d", { alpha: false });
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
+  }
+
+  function sharpenCanvas(canvas, amount) {
+    const width = canvas.width;
+    const height = canvas.height;
+    if (width < 3 || height < 3) return;
+
+    const ctx = canvas.getContext("2d", { alpha: false });
+    const imageData = ctx.getImageData(0, 0, width, height);
+    const source = imageData.data;
+    const sharpened = new Uint8ClampedArray(source);
+    const stride = width * 4;
+
+    for (let y = 1; y < height - 1; y += 1) {
+      for (let x = 1; x < width - 1; x += 1) {
+        const index = y * stride + x * 4;
+
+        for (let channel = 0; channel < 3; channel += 1) {
+          const offset = index + channel;
+          const blurred =
+            (source[offset - stride - 4] +
+              2 * source[offset - stride] +
+              source[offset - stride + 4] +
+              2 * source[offset - 4] +
+              4 * source[offset] +
+              2 * source[offset + 4] +
+              source[offset + stride - 4] +
+              2 * source[offset + stride] +
+              source[offset + stride + 4]) /
+            16;
+          sharpened[offset] = source[offset] + (source[offset] - blurred) * amount;
+        }
+      }
+    }
+
+    imageData.data.set(sharpened);
+    ctx.putImageData(imageData, 0, 0);
   }
 
   function drawGuides(ctx, metrics, pixelsPerInch) {
@@ -615,9 +728,9 @@
 
   async function renderItemForPdf(item, dpi, guides) {
     const canvas = document.createElement("canvas");
-    renderStandeeCanvas(item, canvas, dpi, guides);
+    renderStandeeCanvas(item, canvas, dpi, guides, { enhanceResize: true });
 
-    const blob = await canvasToBlob(canvas, "image/jpeg", 0.92);
+    const blob = await canvasToBlob(canvas, "image/jpeg", PRINT_JPEG_QUALITY);
     const bytes = new Uint8Array(await blob.arrayBuffer());
     const rendered = {
       widthPixels: canvas.width,
