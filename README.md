@@ -20,6 +20,7 @@ For each image, the app creates one vertical piece:
 - Outer bottom rectangle: one quarter of the chosen image width, capped at 0.5 inch high
 
 The image height is calculated from the original aspect ratio.
+When guides are enabled, the lines between the outer rectangles and the rest of the piece include a small halfway mark.
 
 Set an image quantity to `0` to remove that image.
 

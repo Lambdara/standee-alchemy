@@ -502,9 +502,9 @@
   function readSettings() {
     return {
       page: A4_PAGE,
-      margin: clamp(readNumber(els.margin, 0.25), 0, 1.5),
-      spacing: clamp(readNumber(els.spacing, 0.05), 0, 0.5),
-      renderDpi: clamp(Math.round(readNumber(els.renderDpi, 225)), 72, 600),
+      margin: clamp(readNumber(els.margin, 0.2), 0, 1.5),
+      spacing: clamp(readNumber(els.spacing, 0), 0, 0.5),
+      renderDpi: clamp(Math.round(readNumber(els.renderDpi, 300)), 72, 600),
       allowRotate: els.allowRotate.checked,
       drawGuides: els.drawGuides.checked,
     };
@@ -723,6 +723,30 @@
       ctx.lineTo(metrics.width, y);
       ctx.stroke();
     });
+
+    drawOuterTabCenterMarks(ctx, metrics);
+    ctx.restore();
+  }
+
+  function drawOuterTabCenterMarks(ctx, metrics) {
+    const centerX = metrics.width / 2;
+    const markRadius = Math.min(0.08, metrics.outerFlap * 0.28, metrics.width * 0.08);
+    const centersY = [metrics.outerFlap, metrics.bottomOuterY];
+
+    ctx.save();
+    ctx.strokeStyle = "#171f1d";
+    ctx.setLineDash([]);
+    ctx.lineCap = "round";
+
+    centersY.forEach((centerY) => {
+      ctx.beginPath();
+      ctx.moveTo(centerX - markRadius, centerY);
+      ctx.lineTo(centerX + markRadius, centerY);
+      ctx.moveTo(centerX, centerY - markRadius);
+      ctx.lineTo(centerX, centerY + markRadius);
+      ctx.stroke();
+    });
+
     ctx.restore();
   }
 
