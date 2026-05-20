@@ -19,8 +19,10 @@ For each image, the app creates one vertical piece:
 - Inner bottom rectangle: half of the chosen image width
 - Outer bottom rectangle: one quarter of the chosen image width, capped at 0.5 inch high
 
-The image height is calculated from the original aspect ratio.
+The image height is calculated from the original aspect ratio. If the image would be shorter than `sqrt(2) / 2` times its chosen width, white padding is added above the image until it reaches that height.
 When guides are enabled, the lines between the outer rectangles and the rest of the piece include a small halfway mark.
+
+If the normal piece is too tall for the printable A4 area, the app automatically switches that image to fallback pieces and marks this in the image row and layout status. The first fallback keeps the two images connected, adds two 0.5 inch rectangles above and below that body, and moves the base to a separate piece. If that is still too tall, the app prints two separate single-image pieces plus the separate base.
 
 Set an image quantity to `0` to remove that image.
 

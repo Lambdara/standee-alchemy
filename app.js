@@ -15,6 +15,8 @@
   const PRINT_JPEG_QUALITY = 0.96;
   const PRINT_SHARPEN_AMOUNT = 0.42;
   const MAX_SHARPEN_PIXELS = 16000000;
+  const FALLBACK_TAB_HEIGHT = 0.5;
+  const MIN_IMAGE_HEIGHT_RATIO = Math.SQRT2 / 2;
 
   const state = {
     items: [],
@@ -252,6 +254,13 @@
     return state.items.reduce((total, item) => total + getQuantity(item), 0);
   }
 
+  function getUsableArea(settings) {
+    return {
+      width: settings.page.width - settings.margin * 2,
+      height: settings.page.height - settings.margin * 2,
+    };
+  }
+
   function render() {
     els.itemCount.textContent = `${state.items.length} ${state.items.length === 1 ? "image" : "images"}`;
     els.clearAll.disabled = state.items.length === 0;
@@ -261,6 +270,7 @@
 
   function renderItemList() {
     els.itemList.textContent = "";
+    const settings = readSettings();
 
     if (state.items.length === 0) {
       const empty = document.createElement("div");
@@ -271,8 +281,10 @@
     }
 
     const fragment = document.createDocumentFragment();
-    for (const item of state.items) {
+    for (let itemIndex = 0; itemIndex < state.items.length; itemIndex += 1) {
+      const item = state.items[itemIndex];
       const metrics = getMetrics(item);
+      const itemPlan = getItemPlan(item, itemIndex, settings);
       const card = document.createElement("article");
       card.className = "item-card";
 
@@ -305,7 +317,13 @@
       const meta = document.createElement("div");
       meta.className = "meta";
       appendLine(meta, `${item.naturalWidth} x ${item.naturalHeight} px source`);
-      appendLine(meta, `${formatInches(metrics.imageHeight)} image height`);
+      appendLine(meta, `${formatInches(metrics.imageHeight)} image area height`);
+      if (metrics.imagePaddingTop > EPS) {
+        appendLine(meta, `${formatInches(metrics.imagePaddingTop)} white padding above image`);
+      }
+      if (itemPlan.mode !== "normal") {
+        appendLine(meta, `${itemPlan.modeLabel}. ${itemPlan.reason}`);
+      }
 
       const widthRow = document.createElement("div");
       widthRow.className = "width-row";
@@ -327,7 +345,15 @@
 
       const size = document.createElement("div");
       size.className = "size-pill";
-      size.textContent = `${formatInches(metrics.width)} x ${formatInches(metrics.totalHeight)} final`;
+      if (itemPlan.mode === "normal") {
+        size.textContent = `${formatInches(metrics.width)} x ${formatInches(metrics.totalHeight)} final`;
+      } else if (itemPlan.ok) {
+        size.classList.add("warning");
+        size.textContent = `${itemPlan.piecesPerCopy} parts per copy`;
+      } else {
+        size.classList.add("error");
+        size.textContent = "Does not fit";
+      }
 
       const quantityLabel = document.createElement("label");
       const quantityText = document.createElement("span");
@@ -377,10 +403,20 @@
     }
 
     els.generatePdf.disabled = false;
-    const pieceCount = getTotalQuantity();
-    const pieceWord = pieceCount === 1 ? "piece" : "pieces";
+    const standeeCount = getTotalQuantity();
+    const printableCount = layout.partCount;
+    const pieceWord = printableCount === 1 ? "piece" : "pieces";
     const pageWord = layout.pages.length === 1 ? "page" : "pages";
-    setStatus(`${pieceCount} ${pieceWord} packed on ${layout.pages.length} ${pageWord}.`);
+    const fallbackNote =
+      layout.fallbackItemCount > 0 ? ` ${layout.fallbackItemCount} image(s) use fallback pieces.` : "";
+    if (printableCount === standeeCount) {
+      setStatus(`${printableCount} ${pieceWord} packed on ${layout.pages.length} ${pageWord}.${fallbackNote}`);
+    } else {
+      setStatus(
+        `${standeeCount} standee(s) packed as ${printableCount} printable ${pieceWord} on ` +
+          `${layout.pages.length} ${pageWord}.${fallbackNote}`
+      );
+    }
     els.layoutSummary.textContent =
       `Printable area: ${formatInches(layout.usableWidth)} x ${formatInches(layout.usableHeight)}. ` +
       `Render: ${settings.renderDpi} DPI.`;
@@ -434,8 +470,7 @@
         box.style.width = `${(placement.width / page.width) * 100}%`;
         box.style.height = `${(placement.height / page.height) * 100}%`;
         const label = document.createElement("span");
-        const copyLabel =
-          getQuantity(placement.item) > 1 ? `${itemIndex}.${placement.copyNumber}` : String(itemIndex);
+        const copyLabel = getPlacementLabel(placement, itemIndex);
         label.textContent = placement.rotated ? `${copyLabel} R` : copyLabel;
         box.append(label);
         sheet.append(box);
@@ -445,6 +480,18 @@
     });
 
     els.pagePreview.append(fragment);
+  }
+
+  function getPlacementLabel(placement, itemIndex) {
+    const copyLabel = getQuantity(placement.item) > 1 ? `${itemIndex}.${placement.copyNumber}` : String(itemIndex);
+    if (!placement.label || placement.type === "normal") return copyLabel;
+
+    const shortLabels = {
+      "split-body": "body",
+      base: "base",
+      "single-image": placement.label === "front" ? "A" : "B",
+    };
+    return `${copyLabel} ${shortLabels[placement.type] || placement.label}`;
   }
 
   async function handleGeneratePdf() {
@@ -463,12 +510,12 @@
 
     try {
       const rendered = new Map();
-      const uniqueItems = collectUniqueItems(layout);
+      const uniqueParts = collectUniqueParts(layout);
 
-      for (let index = 0; index < uniqueItems.length; index += 1) {
-        const item = uniqueItems[index];
-        setStatus(`Rendering ${index + 1} of ${uniqueItems.length}: ${item.fileName}`);
-        rendered.set(item.id, await renderItemForPdf(item, settings.renderDpi, settings.drawGuides));
+      for (let index = 0; index < uniqueParts.length; index += 1) {
+        const part = uniqueParts[index];
+        setStatus(`Rendering ${index + 1} of ${uniqueParts.length}: ${part.item.fileName}`);
+        rendered.set(part.renderKey, await renderPartForPdf(part, settings.renderDpi, settings.drawGuides));
       }
 
       setStatus("Writing PDF...");
@@ -486,17 +533,17 @@
     }
   }
 
-  function collectUniqueItems(layout) {
+  function collectUniqueParts(layout) {
     const seen = new Set();
-    const items = [];
+    const parts = [];
     for (const page of layout.pages) {
       for (const placement of page.placements) {
-        if (seen.has(placement.item.id)) continue;
-        seen.add(placement.item.id);
-        items.push(placement.item);
+        if (seen.has(placement.renderKey)) continue;
+        seen.add(placement.renderKey);
+        parts.push(placement.part);
       }
     }
-    return items;
+    return parts;
   }
 
   function readSettings() {
@@ -517,14 +564,19 @@
 
   function getMetrics(item) {
     const width = item.widthInches;
-    const imageHeight = width * (item.naturalHeight / item.naturalWidth);
+    const contentHeight = width * (item.naturalHeight / item.naturalWidth);
+    const minimumImageHeight = width * MIN_IMAGE_HEIGHT_RATIO;
+    const imageHeight = Math.max(contentHeight, minimumImageHeight);
+    const imagePaddingTop = imageHeight - contentHeight;
     const innerFlap = width / 2;
     const outerFlap = Math.min(0.5, width / 4);
     const totalHeight = outerFlap + innerFlap + imageHeight + imageHeight + innerFlap + outerFlap;
 
     return {
       width,
+      contentHeight,
       imageHeight,
+      imagePaddingTop,
       innerFlap,
       outerFlap,
       totalHeight,
@@ -533,6 +585,124 @@
       bottomInnerY: outerFlap + innerFlap + imageHeight + imageHeight,
       bottomOuterY: outerFlap + innerFlap + imageHeight + imageHeight + innerFlap,
     };
+  }
+
+  function getBaseMetrics(width) {
+    const middleHeight = Math.max(0, width - FALLBACK_TAB_HEIGHT * 2);
+    return {
+      width,
+      tabHeight: FALLBACK_TAB_HEIGHT,
+      middleHeight,
+      totalHeight: FALLBACK_TAB_HEIGHT + middleHeight + FALLBACK_TAB_HEIGHT,
+      bottomTabY: FALLBACK_TAB_HEIGHT + middleHeight,
+    };
+  }
+
+  function getItemPlan(item, index, settings) {
+    const usable = getUsableArea(settings);
+    const metrics = getMetrics(item);
+    const baseMetrics = getBaseMetrics(metrics.width);
+
+    if (fitsUpright(metrics.width, metrics.totalHeight, usable)) {
+      return {
+        ok: true,
+        mode: "normal",
+        modeLabel: "Normal",
+        reason: "",
+        piecesPerCopy: 1,
+        makeParts: (copyNumber) => [
+          makePrintPart(item, index, copyNumber, "normal", "piece", metrics.width, metrics.totalHeight, {
+            metrics,
+          }),
+        ],
+      };
+    }
+
+    const splitBodyHeight =
+      FALLBACK_TAB_HEIGHT * 2 + metrics.imageHeight + metrics.imageHeight + FALLBACK_TAB_HEIGHT * 2;
+    if (
+      fitsUpright(metrics.width, splitBodyHeight, usable) &&
+      fitsUpright(baseMetrics.width, baseMetrics.totalHeight, usable)
+    ) {
+      return {
+        ok: true,
+        mode: "split",
+        modeLabel: "Fallback: separate base",
+        reason: "The normal folded piece is too tall for the printable A4 area.",
+        piecesPerCopy: 2,
+        makeParts: (copyNumber) => [
+          makePrintPart(item, index, copyNumber, "split-body", "body", metrics.width, splitBodyHeight, {
+            metrics,
+          }),
+          makePrintPart(item, index, copyNumber, "base", "base", baseMetrics.width, baseMetrics.totalHeight, {
+            baseMetrics,
+          }),
+        ],
+      };
+    }
+
+    const singleImageHeight = metrics.imageHeight + FALLBACK_TAB_HEIGHT + FALLBACK_TAB_HEIGHT;
+    if (
+      fitsUpright(metrics.width, singleImageHeight, usable) &&
+      fitsUpright(baseMetrics.width, baseMetrics.totalHeight, usable)
+    ) {
+      return {
+        ok: true,
+        mode: "separate",
+        modeLabel: "Fallback: separate front/back",
+        reason: "The double-image piece is too tall for the printable A4 area.",
+        piecesPerCopy: 3,
+        makeParts: (copyNumber) => [
+          makePrintPart(item, index, copyNumber, "single-image", "front", metrics.width, singleImageHeight, {
+            metrics,
+            side: "A",
+          }),
+          makePrintPart(item, index, copyNumber, "single-image", "back", metrics.width, singleImageHeight, {
+            metrics,
+            side: "B",
+          }),
+          makePrintPart(item, index, copyNumber, "base", "base", baseMetrics.width, baseMetrics.totalHeight, {
+            baseMetrics,
+          }),
+        ],
+      };
+    }
+
+    return {
+      ok: false,
+      mode: "impossible",
+      modeLabel: "Does not fit",
+      reason: "The image is too tall to fit even with the fallback layouts.",
+      piecesPerCopy: 0,
+      makeParts: () => [],
+      impossible: makePrintPart(item, index, 1, "single-image", "front", metrics.width, singleImageHeight, {
+        metrics,
+        side: "A",
+      }),
+    };
+  }
+
+  function makePrintPart(item, itemIndex, copyNumber, type, label, width, height, extra) {
+    return {
+      item,
+      itemIndex,
+      copyNumber,
+      type,
+      label,
+      width,
+      height,
+      area: width * height,
+      renderKey: `${item.id}:${type}:${label}:${roundKey(width)}:${roundKey(height)}`,
+      ...extra,
+    };
+  }
+
+  function fitsUpright(width, height, usable) {
+    return width <= usable.width + EPS && height <= usable.height + EPS;
+  }
+
+  function roundKey(value) {
+    return value.toFixed(4);
   }
 
   function renderPreviewCanvas(item, canvas, guides) {
@@ -555,9 +725,7 @@
     const metrics = getMetrics(item);
     const pixelWidth = Math.max(1, Math.ceil(metrics.width * pixelsPerInch));
     const pixelHeight = Math.max(1, Math.ceil(metrics.totalHeight * pixelsPerInch));
-    const imageSource = options.enhanceResize
-      ? createPrintImageCanvas(item, metrics, pixelsPerInch)
-      : item.image;
+    const imageSource = createImageAreaCanvas(item, metrics, pixelsPerInch, options.enhanceResize === true);
 
     canvas.width = pixelWidth;
     canvas.height = pixelHeight;
@@ -592,20 +760,38 @@
     ctx.restore();
   }
 
-  function createPrintImageCanvas(item, metrics, pixelsPerInch) {
+  function createImageAreaCanvas(item, metrics, pixelsPerInch, enhanceResize) {
     const targetWidth = Math.max(1, Math.round(metrics.width * pixelsPerInch));
     const targetHeight = Math.max(1, Math.round(metrics.imageHeight * pixelsPerInch));
-    const canvas = resizeImageToCanvas(
-      item.image,
-      item.naturalWidth,
-      item.naturalHeight,
-      targetWidth,
-      targetHeight
-    );
-    const isDownscaled = targetWidth < item.naturalWidth || targetHeight < item.naturalHeight;
+    const contentHeight = Math.max(1, Math.round(metrics.contentHeight * pixelsPerInch));
+    const paddingTop = Math.max(0, targetHeight - contentHeight);
+    const canvas = makeImageCanvas(targetWidth, targetHeight);
+    const ctx = canvas.getContext("2d", { alpha: false });
 
-    if (isDownscaled && targetWidth * targetHeight <= MAX_SHARPEN_PIXELS) {
-      sharpenCanvas(canvas, PRINT_SHARPEN_AMOUNT);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, targetWidth, targetHeight);
+
+    if (enhanceResize) {
+      const imageCanvas = resizeImageToCanvas(
+        item.image,
+        item.naturalWidth,
+        item.naturalHeight,
+        targetWidth,
+        contentHeight
+      );
+      const isDownscaled = targetWidth < item.naturalWidth || contentHeight < item.naturalHeight;
+
+      if (isDownscaled && targetWidth * contentHeight <= MAX_SHARPEN_PIXELS) {
+        sharpenCanvas(imageCanvas, PRINT_SHARPEN_AMOUNT);
+      }
+
+      ctx.drawImage(imageCanvas, 0, paddingTop);
+      imageCanvas.width = 1;
+      imageCanvas.height = 1;
+    } else {
+      ctx.drawImage(item.image, 0, paddingTop, targetWidth, contentHeight);
     }
 
     return canvas;
@@ -750,9 +936,165 @@
     ctx.restore();
   }
 
-  async function renderItemForPdf(item, dpi, guides) {
+  function drawGuideSet(ctx, width, height, lineYs, markYs, pixelsPerInch) {
+    const lineWidth = Math.max(1 / pixelsPerInch, 0.0035);
+    const inset = lineWidth / 2;
+
+    ctx.save();
+    ctx.lineWidth = lineWidth;
+    ctx.strokeStyle = "#171f1d";
+    ctx.setLineDash([]);
+    ctx.strokeRect(inset, inset, width - lineWidth, height - lineWidth);
+
+    ctx.strokeStyle = "#6f7a76";
+    ctx.setLineDash([0.075, 0.045]);
+    uniqueNumbers(lineYs).forEach((y) => {
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(width, y);
+      ctx.stroke();
+    });
+
+    drawCenterMarks(ctx, width, markYs, Math.min(0.08, FALLBACK_TAB_HEIGHT * 0.28, width * 0.08));
+    ctx.restore();
+  }
+
+  function drawCenterMarks(ctx, width, centersY, markRadius) {
+    const centerX = width / 2;
+
+    ctx.save();
+    ctx.strokeStyle = "#171f1d";
+    ctx.setLineDash([]);
+    ctx.lineCap = "round";
+
+    uniqueNumbers(centersY).forEach((centerY) => {
+      ctx.beginPath();
+      ctx.moveTo(centerX - markRadius, centerY);
+      ctx.lineTo(centerX + markRadius, centerY);
+      ctx.moveTo(centerX, centerY - markRadius);
+      ctx.lineTo(centerX, centerY + markRadius);
+      ctx.stroke();
+    });
+
+    ctx.restore();
+  }
+
+  function uniqueNumbers(values) {
+    const result = [];
+    values.forEach((value) => {
+      if (!result.some((existing) => Math.abs(existing - value) <= EPS)) {
+        result.push(value);
+      }
+    });
+    return result;
+  }
+
+  function renderPartCanvas(part, canvas, pixelsPerInch, guides, options = {}) {
+    const pixelWidth = Math.max(1, Math.ceil(part.width * pixelsPerInch));
+    const pixelHeight = Math.max(1, Math.ceil(part.height * pixelsPerInch));
+    const imageSource =
+      part.type === "base"
+        ? null
+        : createImageAreaCanvas(part.item, part.metrics, pixelsPerInch, options.enhanceResize === true);
+
+    canvas.width = pixelWidth;
+    canvas.height = pixelHeight;
+
+    const ctx = canvas.getContext("2d", { alpha: false });
+    ctx.setTransform(pixelsPerInch, 0, 0, pixelsPerInch, 0, 0);
+    drawPrintPart(ctx, part, imageSource, guides, pixelsPerInch);
+  }
+
+  function drawPrintPart(ctx, part, imageSource, guides, pixelsPerInch) {
+    if (part.type === "normal") {
+      drawStandee(ctx, imageSource, part.metrics, guides, pixelsPerInch);
+    } else if (part.type === "split-body") {
+      drawSplitBodyPart(ctx, imageSource, part.metrics, guides, pixelsPerInch);
+    } else if (part.type === "single-image") {
+      drawSingleImagePart(ctx, imageSource, part.metrics, guides, pixelsPerInch);
+    } else {
+      drawBasePart(ctx, part.baseMetrics, guides, pixelsPerInch);
+    }
+  }
+
+  function drawSplitBodyPart(ctx, imageSource, metrics, guides, pixelsPerInch) {
+    const width = metrics.width;
+    const imageHeight = metrics.imageHeight;
+    const topTabMidY = FALLBACK_TAB_HEIGHT;
+    const copyY = FALLBACK_TAB_HEIGHT * 2;
+    const originalY = copyY + imageHeight;
+    const bottomTabStartY = copyY + imageHeight + imageHeight;
+    const bottomTabMidY = bottomTabStartY + FALLBACK_TAB_HEIGHT;
+    const totalHeight = bottomTabStartY + FALLBACK_TAB_HEIGHT * 2;
+
+    ctx.save();
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, width, totalHeight);
+
+    ctx.save();
+    ctx.translate(width, copyY + imageHeight);
+    ctx.rotate(Math.PI);
+    ctx.drawImage(imageSource, 0, 0, width, imageHeight);
+    ctx.restore();
+
+    ctx.drawImage(imageSource, 0, originalY, width, imageHeight);
+
+    if (guides) {
+      drawGuideSet(
+        ctx,
+        width,
+        totalHeight,
+        [topTabMidY, copyY, originalY, bottomTabStartY, bottomTabMidY],
+        [topTabMidY, bottomTabMidY],
+        pixelsPerInch
+      );
+    }
+
+    ctx.restore();
+  }
+
+  function drawSingleImagePart(ctx, imageSource, metrics, guides, pixelsPerInch) {
+    const width = metrics.width;
+    const imageHeight = metrics.imageHeight;
+    const firstTabY = imageHeight;
+    const secondTabY = imageHeight + FALLBACK_TAB_HEIGHT;
+    const totalHeight = imageHeight + FALLBACK_TAB_HEIGHT + FALLBACK_TAB_HEIGHT;
+
+    ctx.save();
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, width, totalHeight);
+    ctx.drawImage(imageSource, 0, 0, width, imageHeight);
+
+    if (guides) {
+      drawGuideSet(ctx, width, totalHeight, [firstTabY, secondTabY], [secondTabY], pixelsPerInch);
+    }
+
+    ctx.restore();
+  }
+
+  function drawBasePart(ctx, baseMetrics, guides, pixelsPerInch) {
+    const width = baseMetrics.width;
+    const totalHeight = baseMetrics.totalHeight;
+
+    ctx.save();
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, width, totalHeight);
+
+    if (guides) {
+      const lines = uniqueNumbers([baseMetrics.tabHeight, baseMetrics.bottomTabY]);
+      drawGuideSet(ctx, width, totalHeight, lines, lines, pixelsPerInch);
+    }
+
+    ctx.restore();
+  }
+
+  async function renderPartForPdf(part, dpi, guides) {
     const canvas = document.createElement("canvas");
-    renderStandeeCanvas(item, canvas, dpi, guides, { enhanceResize: true });
+    renderPartCanvas(part, canvas, dpi, guides, { enhanceResize: true });
 
     const blob = await canvasToBlob(canvas, "image/jpeg", PRINT_JPEG_QUALITY);
     const bytes = new Uint8Array(await blob.arrayBuffer());
@@ -784,8 +1126,9 @@
   }
 
   function packLayout(items, settings) {
-    const usableWidth = settings.page.width - settings.margin * 2;
-    const usableHeight = settings.page.height - settings.margin * 2;
+    const usable = getUsableArea(settings);
+    const usableWidth = usable.width;
+    const usableHeight = usable.height;
 
     if (usableWidth <= EPS || usableHeight <= EPS) {
       return {
@@ -799,20 +1142,33 @@
     }
 
     const boxes = [];
+    const fallbackItems = new Set();
+    const impossiblePlans = [];
     items.forEach((item, index) => {
-      const metrics = getMetrics(item);
+      const plan = getItemPlan(item, index, settings);
+      if (!plan.ok) {
+        impossiblePlans.push(plan.impossible);
+        return;
+      }
+      if (plan.mode !== "normal") {
+        fallbackItems.add(item.id);
+      }
       const quantity = getQuantity(item);
       for (let copyIndex = 0; copyIndex < quantity; copyIndex += 1) {
-        boxes.push({
-          item,
-          index,
-          copyNumber: copyIndex + 1,
-          width: metrics.width,
-          height: metrics.totalHeight,
-          area: metrics.width * metrics.totalHeight,
-        });
+        boxes.push(...plan.makeParts(copyIndex + 1));
       }
     });
+
+    if (impossiblePlans.length > 0) {
+      return {
+        ok: false,
+        message: `${impossiblePlans.length} image(s) are too tall to fit, even with fallback layouts.`,
+        impossible: impossiblePlans,
+        pages: [],
+        usableWidth,
+        usableHeight,
+      };
+    }
 
     const impossible = boxes.filter((box) => {
       const normal = box.width <= usableWidth + EPS && box.height <= usableHeight + EPS;
@@ -835,7 +1191,7 @@
       };
     }
 
-    boxes.sort((a, b) => b.area - a.area || b.height - a.height || a.index - b.index);
+    boxes.sort((a, b) => b.area - a.area || b.height - a.height || a.itemIndex - b.itemIndex);
 
     const pages = [];
     for (const box of boxes) {
@@ -869,6 +1225,8 @@
       usableWidth,
       usableHeight,
       page: settings.page,
+      partCount: boxes.length,
+      fallbackItemCount: fallbackItems.size,
     };
   }
 
@@ -938,8 +1296,14 @@
 
     page.free = pruneFreeRects(nextFree);
     page.placements.push({
+      part: box,
       item: box.item,
       copyNumber: box.copyNumber,
+      type: box.type,
+      label: box.label,
+      renderKey: box.renderKey,
+      sourceWidth: box.width,
+      sourceHeight: box.height,
       x: placement.x,
       y: placement.y,
       width: placement.width,
@@ -1040,11 +1404,11 @@
     const writer = new PdfWriter();
     const catalogId = writer.reserveObject();
     const pagesId = writer.reserveObject();
-    const usedItems = collectUniqueItems(layout);
+    const usedParts = collectUniqueParts(layout);
     const imageObjectIds = new Map();
 
-    for (const item of usedItems) {
-      imageObjectIds.set(item.id, writer.reserveObject());
+    for (const part of usedParts) {
+      imageObjectIds.set(part.renderKey, writer.reserveObject());
     }
 
     const pageRecords = layout.pages.map(() => ({
@@ -1054,9 +1418,9 @@
 
     writer.writeHeader();
 
-    for (const item of usedItems) {
-      const image = rendered.get(item.id);
-      const imageId = imageObjectIds.get(item.id);
+    for (const part of usedParts) {
+      const image = rendered.get(part.renderKey);
+      const imageId = imageObjectIds.get(part.renderKey);
       writer.writeObject(imageId, [
         `<< /Type /XObject /Subtype /Image /Width ${image.widthPixels} /Height ${image.heightPixels} ` +
           `/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Interpolate true ` +
@@ -1074,7 +1438,7 @@
       pageLayout.placements.forEach((placement, index) => {
         const alias = `Im${index}`;
         aliases.set(placement, alias);
-        xObjects.push(`/${alias} ${imageObjectIds.get(placement.item.id)} 0 R`);
+        xObjects.push(`/${alias} ${imageObjectIds.get(placement.renderKey)} 0 R`);
       });
 
       const content = pageLayout.placements
@@ -1111,9 +1475,8 @@
 
   function makeImageCommand(placement, alias, settings) {
     const pageHeightPoints = settings.page.height * 72;
-    const metrics = getMetrics(placement.item);
-    const originalWidthPoints = metrics.width * 72;
-    const originalHeightPoints = metrics.totalHeight * 72;
+    const originalWidthPoints = placement.sourceWidth * 72;
+    const originalHeightPoints = placement.sourceHeight * 72;
     const x = (settings.margin + placement.x) * 72;
     const topY = settings.margin + placement.y;
     const y = pageHeightPoints - (topY + placement.height) * 72;

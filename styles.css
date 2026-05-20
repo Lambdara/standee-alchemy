@@ -360,6 +360,17 @@ button:focus-visible,
   font-size: 0.82rem;
 }
 
+.size-pill.warning {
+  border-color: var(--warn-line);
+  background: var(--warn-bg);
+}
+
+.size-pill.error {
+  border-color: rgb(180 35 24 / 45%);
+  background: #fff0ef;
+  color: var(--danger);
+}
+
 .status {
   min-height: 24px;
   font-size: 0.9rem;
