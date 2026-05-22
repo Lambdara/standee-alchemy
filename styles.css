@@ -343,15 +343,20 @@ button:focus-visible,
 
 .width-row {
   display: grid;
-  grid-template-columns: minmax(100px, 145px) minmax(76px, 92px) minmax(0, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(86px, 1fr));
   align-items: end;
   gap: 0.75rem;
+}
+
+.width-row label {
+  min-width: 0;
 }
 
 .size-pill {
   min-height: 38px;
   display: inline-flex;
   align-items: center;
+  grid-column: 1 / -1;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: #f8faf9;

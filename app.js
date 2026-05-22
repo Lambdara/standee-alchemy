@@ -17,6 +17,9 @@
   const MAX_SHARPEN_PIXELS = 16000000;
   const FALLBACK_TAB_HEIGHT = 0.5;
   const MIN_IMAGE_HEIGHT_RATIO = Math.SQRT2 / 2;
+  const DEFAULT_IMAGE_SCALE_PERCENT = 100;
+  const MIN_IMAGE_SCALE_PERCENT = 1;
+  const MAX_IMAGE_SCALE_PERCENT = 200;
 
   const state = {
     items: [],
@@ -67,6 +70,16 @@
       const item = findItem(select.dataset.itemId);
       if (!item) return;
       item.widthInches = Number(select.value);
+      resetPdfLink();
+      render();
+      return;
+    }
+
+    const scaleInput = event.target.closest("[data-scale-input]");
+    if (scaleInput) {
+      const item = findItem(scaleInput.dataset.itemId);
+      if (!item) return;
+      item.scalePercent = readScalePercent(scaleInput.value);
       resetPdfLink();
       render();
       return;
@@ -195,6 +208,7 @@
           naturalWidth: image.naturalWidth,
           naturalHeight: image.naturalHeight,
           widthInches: Number(els.defaultWidth.value),
+          scalePercent: DEFAULT_IMAGE_SCALE_PERCENT,
           quantity: 1,
         });
       };
@@ -242,6 +256,17 @@
 
   function getQuantity(item) {
     return readQuantity(item.quantity);
+  }
+
+  function getScalePercent(item) {
+    return readScalePercent(item.scalePercent);
+  }
+
+  function readScalePercent(value) {
+    if (value === "" || value === null || value === undefined) return DEFAULT_IMAGE_SCALE_PERCENT;
+    const scale = Math.round(Number(value));
+    if (!Number.isFinite(scale)) return DEFAULT_IMAGE_SCALE_PERCENT;
+    return clamp(scale, MIN_IMAGE_SCALE_PERCENT, MAX_IMAGE_SCALE_PERCENT);
   }
 
   function readQuantity(value) {
@@ -318,6 +343,14 @@
       meta.className = "meta";
       appendLine(meta, `${item.naturalWidth} x ${item.naturalHeight} px source`);
       appendLine(meta, `${formatInches(metrics.imageHeight)} image area height`);
+      if (metrics.imageScalePercent !== DEFAULT_IMAGE_SCALE_PERCENT) {
+        appendLine(meta, `${metrics.imageScalePercent}% image scale`);
+        if (metrics.imagePaddingX >= 0.005) {
+          appendLine(meta, `${formatInches(metrics.imagePaddingX)} white padding each side`);
+        } else if (metrics.imageCropX >= 0.005) {
+          appendLine(meta, `${formatInches(metrics.imageCropX)} cropped each side`);
+        }
+      }
       if (metrics.imagePaddingTop > EPS) {
         appendLine(meta, `${formatInches(metrics.imagePaddingTop)} white padding above image`);
       }
@@ -342,6 +375,19 @@
       }
       widthSelect.value = String(item.widthInches);
       widthLabel.append(widthText, widthSelect);
+
+      const scaleLabel = document.createElement("label");
+      const scaleText = document.createElement("span");
+      scaleText.textContent = "Image scale (%)";
+      const scaleInput = document.createElement("input");
+      scaleInput.type = "number";
+      scaleInput.min = String(MIN_IMAGE_SCALE_PERCENT);
+      scaleInput.max = String(MAX_IMAGE_SCALE_PERCENT);
+      scaleInput.step = "5";
+      scaleInput.value = String(getScalePercent(item));
+      scaleInput.dataset.scaleInput = "true";
+      scaleInput.dataset.itemId = item.id;
+      scaleLabel.append(scaleText, scaleInput);
 
       const size = document.createElement("div");
       size.className = "size-pill";
@@ -368,7 +414,7 @@
       quantityInput.dataset.itemId = item.id;
       quantityLabel.append(quantityText, quantityInput);
 
-      widthRow.append(widthLabel, quantityLabel, size);
+      widthRow.append(widthLabel, scaleLabel, quantityLabel, size);
       details.append(titleRow, meta, widthRow);
       card.append(preview, details);
       fragment.append(card);
@@ -564,9 +610,15 @@
 
   function getMetrics(item) {
     const width = item.widthInches;
-    const contentHeight = width * (item.naturalHeight / item.naturalWidth);
+    const imageScalePercent = getScalePercent(item);
+    const imageScale = imageScalePercent / 100;
+    const contentWidth = width * imageScale;
+    const contentHeight = contentWidth * (item.naturalHeight / item.naturalWidth);
     const minimumImageHeight = width * MIN_IMAGE_HEIGHT_RATIO;
     const imageHeight = Math.max(contentHeight, minimumImageHeight);
+    const horizontalInset = (width - contentWidth) / 2;
+    const imagePaddingX = Math.max(0, horizontalInset);
+    const imageCropX = Math.max(0, -horizontalInset);
     const imagePaddingTop = imageHeight - contentHeight;
     const innerFlap = width / 2;
     const outerFlap = Math.min(0.5, width / 4);
@@ -574,8 +626,13 @@
 
     return {
       width,
+      imageScalePercent,
+      imageScale,
+      contentWidth,
       contentHeight,
       imageHeight,
+      imagePaddingX,
+      imageCropX,
       imagePaddingTop,
       innerFlap,
       outerFlap,
@@ -692,7 +749,7 @@
       width,
       height,
       area: width * height,
-      renderKey: `${item.id}:${type}:${label}:${roundKey(width)}:${roundKey(height)}`,
+      renderKey: `${item.id}:${type}:${label}:${roundKey(width)}:${roundKey(height)}:${getScalePercent(item)}`,
       ...extra,
     };
   }
@@ -763,7 +820,9 @@
   function createImageAreaCanvas(item, metrics, pixelsPerInch, enhanceResize) {
     const targetWidth = Math.max(1, Math.round(metrics.width * pixelsPerInch));
     const targetHeight = Math.max(1, Math.round(metrics.imageHeight * pixelsPerInch));
+    const contentWidth = Math.max(1, Math.round(metrics.contentWidth * pixelsPerInch));
     const contentHeight = Math.max(1, Math.round(metrics.contentHeight * pixelsPerInch));
+    const paddingLeft = (targetWidth - contentWidth) / 2;
     const paddingTop = Math.max(0, targetHeight - contentHeight);
     const canvas = makeImageCanvas(targetWidth, targetHeight);
     const ctx = canvas.getContext("2d", { alpha: false });
@@ -773,28 +832,87 @@
     ctx.fillStyle = "#ffffff";
     ctx.fillRect(0, 0, targetWidth, targetHeight);
 
+    if (contentWidth > targetWidth) {
+      const sourceCropWidth = Math.max(1, item.naturalWidth / metrics.imageScale);
+      const sourceCropX = Math.max(0, (item.naturalWidth - sourceCropWidth) / 2);
+
+      if (enhanceResize) {
+        const imageCanvas = resizeCroppedImageToCanvas(
+          item.image,
+          sourceCropX,
+          0,
+          sourceCropWidth,
+          item.naturalHeight,
+          targetWidth,
+          contentHeight
+        );
+        const isDownscaled = targetWidth < sourceCropWidth || contentHeight < item.naturalHeight;
+
+        if (isDownscaled && targetWidth * contentHeight <= MAX_SHARPEN_PIXELS) {
+          sharpenCanvas(imageCanvas, PRINT_SHARPEN_AMOUNT);
+        }
+
+        ctx.drawImage(imageCanvas, 0, paddingTop);
+        imageCanvas.width = 1;
+        imageCanvas.height = 1;
+      } else {
+        ctx.drawImage(
+          item.image,
+          sourceCropX,
+          0,
+          sourceCropWidth,
+          item.naturalHeight,
+          0,
+          paddingTop,
+          targetWidth,
+          contentHeight
+        );
+      }
+
+      return canvas;
+    }
+
     if (enhanceResize) {
       const imageCanvas = resizeImageToCanvas(
         item.image,
         item.naturalWidth,
         item.naturalHeight,
-        targetWidth,
+        contentWidth,
         contentHeight
       );
-      const isDownscaled = targetWidth < item.naturalWidth || contentHeight < item.naturalHeight;
+      const isDownscaled = contentWidth < item.naturalWidth || contentHeight < item.naturalHeight;
 
-      if (isDownscaled && targetWidth * contentHeight <= MAX_SHARPEN_PIXELS) {
+      if (isDownscaled && contentWidth * contentHeight <= MAX_SHARPEN_PIXELS) {
         sharpenCanvas(imageCanvas, PRINT_SHARPEN_AMOUNT);
       }
 
-      ctx.drawImage(imageCanvas, 0, paddingTop);
+      ctx.drawImage(imageCanvas, paddingLeft, paddingTop);
       imageCanvas.width = 1;
       imageCanvas.height = 1;
     } else {
-      ctx.drawImage(item.image, 0, paddingTop, targetWidth, contentHeight);
+      ctx.drawImage(item.image, paddingLeft, paddingTop, contentWidth, contentHeight);
     }
 
     return canvas;
+  }
+
+  function resizeCroppedImageToCanvas(
+    source,
+    sourceX,
+    sourceY,
+    sourceWidth,
+    sourceHeight,
+    targetWidth,
+    targetHeight
+  ) {
+    const output = makeImageCanvas(targetWidth, targetHeight);
+    const ctx = output.getContext("2d", { alpha: false });
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, targetWidth, targetHeight);
+    ctx.drawImage(source, sourceX, sourceY, sourceWidth, sourceHeight, 0, 0, targetWidth, targetHeight);
+    return output;
   }
 
   function resizeImageToCanvas(source, sourceWidth, sourceHeight, targetWidth, targetHeight) {
