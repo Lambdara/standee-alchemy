@@ -551,7 +551,7 @@
       page: A4_PAGE,
       margin: clamp(readNumber(els.margin, 0.2), 0, 1.5),
       spacing: clamp(readNumber(els.spacing, 0), 0, 0.5),
-      renderDpi: clamp(Math.round(readNumber(els.renderDpi, 300)), 72, 600),
+      renderDpi: clamp(Math.round(readNumber(els.renderDpi, 600)), 72, 600),
       allowRotate: els.allowRotate.checked,
       drawGuides: els.drawGuides.checked,
     };

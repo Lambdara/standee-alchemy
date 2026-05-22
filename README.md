@@ -29,4 +29,4 @@ If the normal piece is too tall for the printable A4 area, the app automatically
 - A4 page size is supported.
 - The layout uses a fast rectangle-packing heuristic and reports an error when a piece cannot fit on the printable area by itself.
 - Uploaded images are flattened onto a white background when rendered into the PDF.
-- PDF rendering uses progressive downsampling and mild sharpening for cleaner 300 DPI output.
+- PDF rendering defaults to 600 DPI and uses progressive downsampling and mild sharpening for cleaner output.
