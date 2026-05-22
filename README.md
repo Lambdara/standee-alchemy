@@ -24,8 +24,6 @@ When guides are enabled, the lines between the outer rectangles and the rest of 
 
 If the normal piece is too tall for the printable A4 area, the app automatically switches that image to fallback pieces and marks this in the image row and layout status. The first fallback keeps the two images connected, adds two 0.5 inch rectangles above and below that body, and moves the base to a separate piece. If that is still too tall, the app prints two separate single-image pieces plus the separate base.
 
-Set an image quantity to `0` to remove that image.
-
 ## Notes
 
 - A4 page size is supported.
