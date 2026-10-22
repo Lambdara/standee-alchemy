@@ -963,10 +963,10 @@
 
     const ctx = canvas.getContext("2d", { alpha: false });
     ctx.setTransform(pixelsPerInch, 0, 0, pixelsPerInch, 0, 0);
-    drawStandee(ctx, imageSource, metrics, guides, pixelsPerInch);
+    drawStandee(ctx, imageSource, metrics, guides, pixelsPerInch, item.fileName);
   }
 
-  function drawStandee(ctx, imageSource, metrics, guides, pixelsPerInch) {
+  function drawStandee(ctx, imageSource, metrics, guides, pixelsPerInch, fileName) {
     const width = metrics.width;
     const imageHeight = metrics.imageHeight;
 
@@ -983,11 +983,37 @@
     ctx.restore();
 
     ctx.drawImage(imageSource, 0, metrics.originalY, width, imageHeight);
+    drawCharacterName(ctx, fileName, width, metrics.bottomInnerY, metrics.innerFlap);
 
     if (guides) {
       drawGuides(ctx, metrics, pixelsPerInch);
     }
 
+    ctx.restore();
+  }
+
+  function drawCharacterName(ctx, fileName, width, top, height) {
+    const name = String(fileName || "").replace(/\.[^.]+$/, "").trim();
+    if (!name) return;
+
+    const padding = Math.min(0.08, width * 0.08, height * 0.2);
+    const maxWidth = width - padding * 2;
+    let fontSize = Math.min(0.14, height * 0.3, width * 0.16);
+
+    ctx.save();
+    ctx.fillStyle = "#171f1d";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "alphabetic";
+    ctx.font = `${fontSize}px sans-serif`;
+    const textWidth = ctx.measureText(name).width;
+    if (textWidth > maxWidth) {
+      fontSize *= maxWidth / textWidth;
+      ctx.font = `${fontSize}px sans-serif`;
+    }
+    const bounds = ctx.measureText(name);
+    const x = width / 2 + (bounds.actualBoundingBoxLeft - bounds.actualBoundingBoxRight) / 2;
+    const y = top + height / 2 + (bounds.actualBoundingBoxAscent - bounds.actualBoundingBoxDescent) / 2;
+    ctx.fillText(name, x, y);
     ctx.restore();
   }
 
@@ -1299,17 +1325,17 @@
 
   function drawPrintPart(ctx, part, imageSource, guides, pixelsPerInch) {
     if (part.type === "normal") {
-      drawStandee(ctx, imageSource, part.metrics, guides, pixelsPerInch);
+      drawStandee(ctx, imageSource, part.metrics, guides, pixelsPerInch, part.item.fileName);
     } else if (part.type === "split-body") {
-      drawSplitBodyPart(ctx, imageSource, part.metrics, guides, pixelsPerInch);
+      drawSplitBodyPart(ctx, imageSource, part.metrics, guides, pixelsPerInch, part.item.fileName);
     } else if (part.type === "single-image") {
-      drawSingleImagePart(ctx, imageSource, part.metrics, guides, pixelsPerInch);
+      drawSingleImagePart(ctx, imageSource, part.metrics, guides, pixelsPerInch, part.item.fileName);
     } else {
       drawBasePart(ctx, part.baseMetrics, guides, pixelsPerInch);
     }
   }
 
-  function drawSplitBodyPart(ctx, imageSource, metrics, guides, pixelsPerInch) {
+  function drawSplitBodyPart(ctx, imageSource, metrics, guides, pixelsPerInch, fileName) {
     const width = metrics.width;
     const imageHeight = metrics.imageHeight;
     const topTabMidY = FALLBACK_OUTER_TAB_HEIGHT;
@@ -1332,6 +1358,7 @@
     ctx.restore();
 
     ctx.drawImage(imageSource, 0, originalY, width, imageHeight);
+    drawCharacterName(ctx, fileName, width, bottomTabStartY, FALLBACK_TAB_HEIGHT);
 
     if (guides) {
       drawGuideSet(
@@ -1347,7 +1374,7 @@
     ctx.restore();
   }
 
-  function drawSingleImagePart(ctx, imageSource, metrics, guides, pixelsPerInch) {
+  function drawSingleImagePart(ctx, imageSource, metrics, guides, pixelsPerInch, fileName) {
     const width = metrics.width;
     const imageHeight = metrics.imageHeight;
     const firstTabY = imageHeight;
@@ -1360,6 +1387,7 @@
     ctx.fillStyle = "#ffffff";
     ctx.fillRect(0, 0, width, totalHeight);
     ctx.drawImage(imageSource, 0, 0, width, imageHeight);
+    drawCharacterName(ctx, fileName, width, firstTabY, FALLBACK_TAB_HEIGHT);
 
     if (guides) {
       drawGuideSet(ctx, width, totalHeight, [firstTabY, secondTabY], [secondTabY], pixelsPerInch);
