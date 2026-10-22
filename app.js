@@ -18,6 +18,7 @@
   const PRINT_SHARPEN_AMOUNT = 0.42;
   const MAX_SHARPEN_PIXELS = 16000000;
   const FALLBACK_TAB_HEIGHT = 0.5;
+  const FALLBACK_OUTER_TAB_HEIGHT = FALLBACK_TAB_HEIGHT / 2;
   const MIN_IMAGE_HEIGHT_RATIO = Math.SQRT2 / 2;
   const DEFAULT_IMAGE_SCALE_PERCENT = 100;
   const MIN_IMAGE_SCALE_PERCENT = 1;
@@ -792,8 +793,9 @@
     const imageCropX = Math.max(0, -horizontalInset);
     const imagePaddingTop = imageHeight - contentHeight;
     const innerFlap = width / 2;
-    const outerFlap = Math.min(0.5, width / 4);
-    const totalHeight = outerFlap + innerFlap + imageHeight + imageHeight + innerFlap + outerFlap;
+    const outerFlap = Math.min(0.5, width / 4) / 2;
+    const bottomOuterFlap = outerFlap;
+    const totalHeight = outerFlap + innerFlap + imageHeight + imageHeight + innerFlap + bottomOuterFlap;
 
     return {
       width,
@@ -807,6 +809,7 @@
       imagePaddingTop,
       innerFlap,
       outerFlap,
+      bottomOuterFlap,
       totalHeight,
       copyY: outerFlap + innerFlap,
       originalY: outerFlap + innerFlap + imageHeight,
@@ -819,10 +822,10 @@
     const middleHeight = Math.max(0, width - FALLBACK_TAB_HEIGHT * 2);
     return {
       width,
-      tabHeight: FALLBACK_TAB_HEIGHT,
+      tabHeight: FALLBACK_OUTER_TAB_HEIGHT,
       middleHeight,
-      totalHeight: FALLBACK_TAB_HEIGHT + middleHeight + FALLBACK_TAB_HEIGHT,
-      bottomTabY: FALLBACK_TAB_HEIGHT + middleHeight,
+      totalHeight: FALLBACK_OUTER_TAB_HEIGHT + middleHeight + FALLBACK_OUTER_TAB_HEIGHT,
+      bottomTabY: FALLBACK_OUTER_TAB_HEIGHT + middleHeight,
     };
   }
 
@@ -847,7 +850,7 @@
     }
 
     const splitBodyHeight =
-      FALLBACK_TAB_HEIGHT * 2 + metrics.imageHeight + metrics.imageHeight + FALLBACK_TAB_HEIGHT * 2;
+      FALLBACK_OUTER_TAB_HEIGHT + FALLBACK_TAB_HEIGHT + metrics.imageHeight + metrics.imageHeight + FALLBACK_TAB_HEIGHT + FALLBACK_OUTER_TAB_HEIGHT;
     if (
       fitsUpright(metrics.width, splitBodyHeight, usable) &&
       fitsUpright(baseMetrics.width, baseMetrics.totalHeight, usable)
@@ -869,7 +872,7 @@
       };
     }
 
-    const singleImageHeight = metrics.imageHeight + FALLBACK_TAB_HEIGHT + FALLBACK_TAB_HEIGHT;
+    const singleImageHeight = metrics.imageHeight + FALLBACK_TAB_HEIGHT + FALLBACK_OUTER_TAB_HEIGHT;
     if (
       fitsUpright(metrics.width, singleImageHeight, usable) &&
       fitsUpright(baseMetrics.width, baseMetrics.totalHeight, usable)
@@ -1309,12 +1312,12 @@
   function drawSplitBodyPart(ctx, imageSource, metrics, guides, pixelsPerInch) {
     const width = metrics.width;
     const imageHeight = metrics.imageHeight;
-    const topTabMidY = FALLBACK_TAB_HEIGHT;
-    const copyY = FALLBACK_TAB_HEIGHT * 2;
+    const topTabMidY = FALLBACK_OUTER_TAB_HEIGHT;
+    const copyY = FALLBACK_OUTER_TAB_HEIGHT + FALLBACK_TAB_HEIGHT;
     const originalY = copyY + imageHeight;
     const bottomTabStartY = copyY + imageHeight + imageHeight;
     const bottomTabMidY = bottomTabStartY + FALLBACK_TAB_HEIGHT;
-    const totalHeight = bottomTabStartY + FALLBACK_TAB_HEIGHT * 2;
+    const totalHeight = bottomTabStartY + FALLBACK_TAB_HEIGHT + FALLBACK_OUTER_TAB_HEIGHT;
 
     ctx.save();
     ctx.imageSmoothingEnabled = true;
@@ -1349,7 +1352,7 @@
     const imageHeight = metrics.imageHeight;
     const firstTabY = imageHeight;
     const secondTabY = imageHeight + FALLBACK_TAB_HEIGHT;
-    const totalHeight = imageHeight + FALLBACK_TAB_HEIGHT + FALLBACK_TAB_HEIGHT;
+    const totalHeight = imageHeight + FALLBACK_TAB_HEIGHT + FALLBACK_OUTER_TAB_HEIGHT;
 
     ctx.save();
     ctx.imageSmoothingEnabled = true;
