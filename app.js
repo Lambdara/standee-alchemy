@@ -24,6 +24,8 @@
   const MIN_IMAGE_SCALE_PERCENT = 1;
   const MAX_IMAGE_SCALE_PERCENT = 200;
 
+  const numberCornerCache = new WeakMap();
+
   const state = {
     items: [],
     nextId: 1,
@@ -923,7 +925,7 @@
       width,
       height,
       area: width * height,
-      renderKey: `${item.id}:${type}:${label}:${roundKey(width)}:${roundKey(height)}:${getScalePercent(item)}`,
+      renderKey: `${item.id}:${type}:${label}:${roundKey(width)}:${roundKey(height)}:${getScalePercent(item)}:${getQuantity(item) > 1 && type !== "base" ? copyNumber : ""}`,
       ...extra,
     };
   }
@@ -963,10 +965,10 @@
 
     const ctx = canvas.getContext("2d", { alpha: false });
     ctx.setTransform(pixelsPerInch, 0, 0, pixelsPerInch, 0, 0);
-    drawStandee(ctx, imageSource, metrics, guides, pixelsPerInch, item.fileName);
+    drawStandee(ctx, imageSource, metrics, guides, pixelsPerInch, item.fileName, getQuantity(item) > 1 ? 1 : 0, getNumberCorner(item, metrics));
   }
 
-  function drawStandee(ctx, imageSource, metrics, guides, pixelsPerInch, fileName) {
+  function drawStandee(ctx, imageSource, metrics, guides, pixelsPerInch, fileName, copyNumber = 0, numberCorner = "top-right") {
     const width = metrics.width;
     const imageHeight = metrics.imageHeight;
 
@@ -980,15 +982,95 @@
     ctx.translate(width, metrics.copyY + imageHeight);
     ctx.rotate(Math.PI);
     ctx.drawImage(imageSource, 0, 0, width, imageHeight);
+    drawCopyNumber(ctx, copyNumber, width, 0, imageHeight, numberCorner);
     ctx.restore();
 
     ctx.drawImage(imageSource, 0, metrics.originalY, width, imageHeight);
+    drawCopyNumber(ctx, copyNumber, width, metrics.originalY, imageHeight, numberCorner);
     drawCharacterName(ctx, fileName, width, metrics.bottomInnerY, metrics.innerFlap);
 
     if (guides) {
       drawGuides(ctx, metrics, pixelsPerInch);
     }
 
+    ctx.restore();
+  }
+
+  function measureCopyNumber(ctx, text, width) {
+    // Canvas coordinates are inches, so the number stays readable at print size.
+    const inset = Math.min(0.04, width * 0.04);
+    const fontSize = Math.max(7 / 72, Math.min(12 / 72, width * 0.12));
+    ctx.font = `bold ${fontSize}px sans-serif`;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "alphabetic";
+    const bounds = ctx.measureText(text);
+    const outlineWidth = fontSize * 0.18;
+    return {
+      inset, bounds, outlineWidth,
+      width: bounds.actualBoundingBoxLeft + bounds.actualBoundingBoxRight + outlineWidth,
+      height: bounds.actualBoundingBoxAscent + bounds.actualBoundingBoxDescent + outlineWidth,
+    };
+  }
+
+  function getNumberCorner(item, metrics) {
+    if (getQuantity(item) <= 1) return "top-right";
+    const key = `${metrics.width}:${metrics.imageHeight}:${metrics.imageScalePercent}:${getQuantity(item)}`;
+    const cached = numberCornerCache.get(item);
+    if (cached && cached.key === key) return cached.corner;
+
+    // Use one fixed resolution for identical choices in previews and printouts.
+    const dpi = 144;
+    const image = createImageAreaCanvas(item, metrics, dpi, false);
+    const ctx = image.getContext("2d");
+    // Reserve enough space for every copy, keeping its corner consistent.
+    const box = measureCopyNumber(ctx, "8".repeat(String(getQuantity(item)).length), metrics.width);
+    const patchWidth = Math.min(image.width, Math.ceil(box.width * dpi));
+    const patchHeight = Math.min(image.height, Math.ceil(box.height * dpi));
+    const inset = Math.round(box.inset * dpi);
+    let bestCorner = "top-right";
+    let bestScore = Infinity;
+    for (const corner of ["top-right", "top-left", "bottom-right", "bottom-left"]) {
+      const x = Math.max(0, Math.min(image.width - patchWidth,
+        corner.endsWith("right") ? image.width - inset - patchWidth : inset));
+      const y = Math.max(0, Math.min(image.height - patchHeight,
+        corner.startsWith("bottom") ? image.height - inset - patchHeight : inset));
+      const pixels = ctx.getImageData(x, y, patchWidth, patchHeight).data;
+      let occupied = 0;
+      let darkness = 0;
+      for (let i = 0; i < pixels.length; i += 4) {
+        const shade = Math.min(pixels[i], pixels[i + 1], pixels[i + 2]);
+        if (shade < 245) occupied += 1;
+        darkness += (255 - shade) / 255;
+      }
+      // Prefer empty white space, then lighter areas when every corner has art.
+      const score = occupied + darkness * 0.1;
+      if (score < bestScore) {
+        bestScore = score;
+        bestCorner = corner;
+      }
+    }
+    numberCornerCache.set(item, { key, corner: bestCorner });
+    return bestCorner;
+  }
+
+  function drawCopyNumber(ctx, copyNumber, width, imageTop, imageHeight, corner) {
+    if (!copyNumber) return;
+    const text = String(copyNumber);
+    ctx.save();
+    const box = measureCopyNumber(ctx, text, width);
+    const left = corner.endsWith("right") ? width - box.inset - box.width : box.inset;
+    const top = imageTop + (corner.startsWith("bottom")
+      ? imageHeight - box.inset - box.height : box.inset);
+    const x = left + box.outlineWidth / 2 + box.bounds.actualBoundingBoxLeft;
+    const y = top + box.outlineWidth / 2 + box.bounds.actualBoundingBoxAscent;
+
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = box.outlineWidth;
+    ctx.lineJoin = "round";
+    ctx.setLineDash([]);
+    ctx.strokeText(text, x, y);
+    ctx.fillStyle = "#000000";
+    ctx.fillText(text, x, y);
     ctx.restore();
   }
 
@@ -1324,18 +1406,19 @@
   }
 
   function drawPrintPart(ctx, part, imageSource, guides, pixelsPerInch) {
+    const numberCorner = part.type === "base" ? "top-right" : getNumberCorner(part.item, part.metrics);
     if (part.type === "normal") {
-      drawStandee(ctx, imageSource, part.metrics, guides, pixelsPerInch, part.item.fileName);
+      drawStandee(ctx, imageSource, part.metrics, guides, pixelsPerInch, part.item.fileName, getQuantity(part.item) > 1 ? part.copyNumber : 0, numberCorner);
     } else if (part.type === "split-body") {
-      drawSplitBodyPart(ctx, imageSource, part.metrics, guides, pixelsPerInch, part.item.fileName);
+      drawSplitBodyPart(ctx, imageSource, part.metrics, guides, pixelsPerInch, part.item.fileName, getQuantity(part.item) > 1 ? part.copyNumber : 0, numberCorner);
     } else if (part.type === "single-image") {
-      drawSingleImagePart(ctx, imageSource, part.metrics, guides, pixelsPerInch, part.item.fileName);
+      drawSingleImagePart(ctx, imageSource, part.metrics, guides, pixelsPerInch, part.item.fileName, getQuantity(part.item) > 1 ? part.copyNumber : 0, numberCorner);
     } else {
       drawBasePart(ctx, part.baseMetrics, guides, pixelsPerInch);
     }
   }
 
-  function drawSplitBodyPart(ctx, imageSource, metrics, guides, pixelsPerInch, fileName) {
+  function drawSplitBodyPart(ctx, imageSource, metrics, guides, pixelsPerInch, fileName, copyNumber = 0, numberCorner = "top-right") {
     const width = metrics.width;
     const imageHeight = metrics.imageHeight;
     const topTabMidY = FALLBACK_OUTER_TAB_HEIGHT;
@@ -1355,9 +1438,11 @@
     ctx.translate(width, copyY + imageHeight);
     ctx.rotate(Math.PI);
     ctx.drawImage(imageSource, 0, 0, width, imageHeight);
+    drawCopyNumber(ctx, copyNumber, width, 0, imageHeight, numberCorner);
     ctx.restore();
 
     ctx.drawImage(imageSource, 0, originalY, width, imageHeight);
+    drawCopyNumber(ctx, copyNumber, width, originalY, imageHeight, numberCorner);
     drawCharacterName(ctx, fileName, width, bottomTabStartY, FALLBACK_TAB_HEIGHT);
 
     if (guides) {
@@ -1374,7 +1459,7 @@
     ctx.restore();
   }
 
-  function drawSingleImagePart(ctx, imageSource, metrics, guides, pixelsPerInch, fileName) {
+  function drawSingleImagePart(ctx, imageSource, metrics, guides, pixelsPerInch, fileName, copyNumber = 0, numberCorner = "top-right") {
     const width = metrics.width;
     const imageHeight = metrics.imageHeight;
     const firstTabY = imageHeight;
@@ -1387,6 +1472,7 @@
     ctx.fillStyle = "#ffffff";
     ctx.fillRect(0, 0, width, totalHeight);
     ctx.drawImage(imageSource, 0, 0, width, imageHeight);
+    drawCopyNumber(ctx, copyNumber, width, 0, imageHeight, numberCorner);
     drawCharacterName(ctx, fileName, width, firstTabY, FALLBACK_TAB_HEIGHT);
 
     if (guides) {
