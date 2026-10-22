@@ -2,6 +2,8 @@
   "use strict";
 
   const A4_PAGE = { key: "a4", label: "A4", width: 8.27, height: 11.69 };
+  const PROJECT_FORMAT = "standee-alchemy";
+  const PROJECT_VERSION = 1;
 
   const WIDTH_OPTIONS = [
     { value: 0.5, label: "1/2 inch" },
@@ -29,7 +31,10 @@
 
   const els = {
     imageInput: document.querySelector("#imageInput"),
+    projectInput: document.querySelector("#projectInput"),
     chooseFiles: document.querySelector("#chooseFiles"),
+    saveProject: document.querySelector("#saveProject"),
+    loadProject: document.querySelector("#loadProject"),
     generatePdf: document.querySelector("#generatePdf"),
     itemCount: document.querySelector("#itemCount"),
     defaultWidth: document.querySelector("#defaultWidth"),
@@ -50,6 +55,9 @@
 
   els.chooseFiles.addEventListener("click", () => els.imageInput.click());
   els.imageInput.addEventListener("change", handleFilesChosen);
+  els.saveProject.addEventListener("click", handleSaveProject);
+  els.loadProject.addEventListener("click", () => els.projectInput.click());
+  els.projectInput.addEventListener("change", handleProjectChosen);
   els.dropZone.addEventListener("click", () => els.imageInput.click());
   els.dropZone.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" && event.key !== " ") return;
@@ -124,6 +132,13 @@
     event.target.value = "";
   }
 
+  async function handleProjectChosen(event) {
+    const file = event.target.files && event.target.files[0];
+    event.target.value = "";
+    if (!file) return;
+    await loadProjectFile(file);
+  }
+
   async function handleDrop(event) {
     event.preventDefault();
     setDropActive(false);
@@ -186,46 +201,59 @@
     }
   }
 
-  function loadImageFile(file) {
+  async function loadImageFile(file) {
+    const dataUrl = await readFileAsDataUrl(file);
+    return loadImageDataUrl({
+      dataUrl,
+      fileName: file.name,
+      widthInches: Number(els.defaultWidth.value),
+      scalePercent: DEFAULT_IMAGE_SCALE_PERCENT,
+      quantity: 1,
+    });
+  }
+
+  function loadImageDataUrl({ id, dataUrl, fileName, widthInches, scalePercent, quantity }) {
     return new Promise((resolve, reject) => {
-      const url = URL.createObjectURL(file);
       const image = new Image();
       image.decoding = "async";
 
       image.onload = () => {
         if (!image.naturalWidth || !image.naturalHeight) {
-          URL.revokeObjectURL(url);
           reject(new Error("the image has no readable dimensions"));
           return;
         }
 
         resolve({
-          id: String(state.nextId++),
-          file,
-          fileName: file.name,
-          url,
+          id: id || String(state.nextId++),
+          fileName,
+          dataUrl,
           image,
           naturalWidth: image.naturalWidth,
           naturalHeight: image.naturalHeight,
-          widthInches: Number(els.defaultWidth.value),
-          scalePercent: DEFAULT_IMAGE_SCALE_PERCENT,
-          quantity: 1,
+          widthInches,
+          scalePercent,
+          quantity,
         });
       };
 
       image.onerror = () => {
-        URL.revokeObjectURL(url);
         reject(new Error("the browser could not decode it"));
       };
 
-      image.src = url;
+      image.src = dataUrl;
+    });
+  }
+
+  function readFileAsDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ""));
+      reader.onerror = () => reject(new Error("the file could not be read"));
+      reader.readAsDataURL(file);
     });
   }
 
   function clearAllItems() {
-    for (const item of state.items) {
-      URL.revokeObjectURL(item.url);
-    }
     state.items = [];
     resetPdfLink();
     render();
@@ -234,7 +262,6 @@
   function removeItem(itemId) {
     const index = state.items.findIndex((item) => item.id === itemId);
     if (index === -1) return;
-    URL.revokeObjectURL(state.items[index].url);
     state.items.splice(index, 1);
     resetPdfLink();
     render();
@@ -248,6 +275,150 @@
     }
     resetPdfLink();
     render();
+  }
+
+  function handleSaveProject() {
+    try {
+      const project = makeProjectData();
+      const blob = new Blob([JSON.stringify(project)], { type: "application/json" });
+      downloadBlob(blob, makeProjectFileName());
+      setStatus(`Saved state with ${state.items.length} ${state.items.length === 1 ? "image" : "images"}.`);
+    } catch (error) {
+      setStatus(`Could not save state: ${error.message}`, "error");
+    }
+  }
+
+  async function loadProjectFile(file) {
+    setStatus(`Loading state from ${file.name}...`);
+
+    try {
+      const project = JSON.parse(await file.text());
+      const loaded = await readProjectData(project);
+
+      applyProjectSettings(loaded.settings);
+      state.items = loaded.items;
+      state.nextId = state.items.length + 1;
+      resetPdfLink();
+      render();
+      setStatus(`Loaded ${state.items.length} ${state.items.length === 1 ? "image" : "images"} from ${file.name}.`);
+    } catch (error) {
+      setStatus(`Could not load state: ${error.message}`, "error");
+    }
+  }
+
+  function makeProjectData() {
+    const settings = readSettings();
+
+    return {
+      format: PROJECT_FORMAT,
+      version: PROJECT_VERSION,
+      savedAt: new Date().toISOString(),
+      settings: {
+        defaultWidth: Number(els.defaultWidth.value),
+        margin: settings.margin,
+        spacing: settings.spacing,
+        renderDpi: settings.renderDpi,
+        allowRotate: settings.allowRotate,
+        drawGuides: settings.drawGuides,
+      },
+      items: state.items.map(makeProjectItemData),
+    };
+  }
+
+  function makeProjectItemData(item) {
+    if (typeof item.dataUrl !== "string" || !item.dataUrl.startsWith("data:image/")) {
+      throw new Error(`${item.fileName} has no saved image data`);
+    }
+
+    return {
+      fileName: item.fileName,
+      dataUrl: item.dataUrl,
+      widthInches: readWidthOption(item.widthInches, 1),
+      scalePercent: getScalePercent(item),
+      quantity: getQuantity(item),
+    };
+  }
+
+  async function readProjectData(project) {
+    if (!project || project.format !== PROJECT_FORMAT) {
+      throw new Error("this is not a Standee Alchemy state file");
+    }
+    if (Number(project.version || 1) > PROJECT_VERSION) {
+      throw new Error("this state file was saved by a newer version of Standee Alchemy");
+    }
+    if (!Array.isArray(project.items)) {
+      throw new Error("the state file has no image list");
+    }
+
+    const items = [];
+    for (let index = 0; index < project.items.length; index += 1) {
+      const saved = project.items[index];
+      if (!saved || typeof saved.dataUrl !== "string" || !saved.dataUrl.startsWith("data:image/")) {
+        throw new Error(`image ${index + 1} is missing saved image data`);
+      }
+
+      items.push(
+        await loadImageDataUrl({
+          id: String(index + 1),
+          dataUrl: saved.dataUrl,
+          fileName: readSavedFileName(saved.fileName, index),
+          widthInches: readWidthOption(saved.widthInches, 1),
+          scalePercent: readScalePercent(saved.scalePercent),
+          quantity: readQuantity(saved.quantity),
+        })
+      );
+    }
+
+    return {
+      items,
+      settings: project.settings && typeof project.settings === "object" ? project.settings : {},
+    };
+  }
+
+  function applyProjectSettings(settings) {
+    els.defaultWidth.value = String(readWidthOption(settings.defaultWidth, 1));
+    els.margin.value = formatNumber(clamp(readSavedNumber(settings.margin, 0.2), 0, 1.5));
+    els.spacing.value = formatNumber(clamp(readSavedNumber(settings.spacing, 0), 0, 0.5));
+
+    const renderDpi = String(clamp(Math.round(readSavedNumber(settings.renderDpi, 600)), 72, 1200));
+    setSelectValue(els.renderDpi, renderDpi, "600");
+
+    els.allowRotate.checked = settings.allowRotate !== false;
+    els.drawGuides.checked = settings.drawGuides !== false;
+  }
+
+  function readSavedNumber(value, fallback) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : fallback;
+  }
+
+  function readWidthOption(value, fallback) {
+    const width = Number(value);
+    const option = WIDTH_OPTIONS.find((candidate) => Math.abs(candidate.value - width) <= EPS);
+    return option ? option.value : fallback;
+  }
+
+  function setSelectValue(select, value, fallback) {
+    select.value = value;
+    if (select.value !== value) {
+      select.value = fallback;
+    }
+  }
+
+  function readSavedFileName(value, index) {
+    const name = typeof value === "string" ? value.trim() : "";
+    return name || `image-${index + 1}`;
+  }
+
+  function downloadBlob(blob, fileName) {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = fileName;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
   }
 
   function findItem(itemId) {
@@ -597,7 +768,7 @@
       page: A4_PAGE,
       margin: clamp(readNumber(els.margin, 0.2), 0, 1.5),
       spacing: clamp(readNumber(els.spacing, 0), 0, 0.5),
-      renderDpi: clamp(Math.round(readNumber(els.renderDpi, 600)), 72, 600),
+      renderDpi: clamp(Math.round(readNumber(els.renderDpi, 600)), 72, 1200),
       allowRotate: els.allowRotate.checked,
       drawGuides: els.drawGuides.checked,
     };
@@ -1700,6 +1871,11 @@
   function makePdfFileName(settings) {
     const date = new Date().toISOString().slice(0, 10);
     return `standees-${settings.page.key}-${date}.pdf`;
+  }
+
+  function makeProjectFileName() {
+    const date = new Date().toISOString().slice(0, 10);
+    return `standees-state-${date}.standee-alchemy.json`;
   }
 
   function formatInches(value) {

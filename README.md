@@ -5,6 +5,7 @@ A static, client-side standee PDF generator. It uses only browser APIs: no build
 ## Use
 
 Open `index.html` in a browser, add images, choose a width, image scale, and quantity for each image, then generate and download the PDF.
+Use Save State and Load State to export and restore a `.standee-alchemy.json` file with the current settings, images, widths, scales, and quantities.
 
 Print the PDF at actual size / 100% scale. The page margin setting reserves space for printers that cannot print to the edge.
 

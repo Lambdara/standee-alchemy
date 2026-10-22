@@ -16,7 +16,10 @@
 
       <div class="actions">
         <input id="imageInput" type="file" accept="image/*" multiple hidden />
+        <input id="projectInput" type="file" accept="application/json,.json,.standee-alchemy.json" hidden />
         <button id="chooseFiles" type="button">Add Images</button>
+        <button id="saveProject" class="secondary" type="button">Save State</button>
+        <button id="loadProject" class="secondary" type="button">Load State</button>
         <button id="generatePdf" type="button" disabled>Generate PDF</button>
       </div>
     </header>
@@ -54,6 +57,7 @@
               <option value="225">225</option>
               <option value="300">300</option>
               <option value="600" selected>600</option>
+              <option value="1200">1200</option>
             </select>
           </label>
         </div>
