@@ -30,6 +30,9 @@
     items: [],
     nextId: 1,
     pdfUrl: "",
+    pdfRevision: 0,
+    generatingPdf: false,
+    collectionRevision: 0,
   };
 
   const els = {
@@ -183,6 +186,7 @@
     }
     if (files.length === 0) return;
 
+    const revision = state.collectionRevision;
     resetPdfLink();
     setStatus(`Loading ${files.length} ${files.length === 1 ? "image" : "images"}...`);
 
@@ -190,8 +194,11 @@
     for (const file of files) {
       try {
         const item = await loadImageFile(file);
+        if (revision !== state.collectionRevision) return;
         state.items.push(item);
+        resetPdfLink();
       } catch (error) {
+        if (revision !== state.collectionRevision) return;
         failures.push(`${file.name}: ${error.message}`);
       }
     }
@@ -257,6 +264,7 @@
   }
 
   function clearAllItems() {
+    state.collectionRevision += 1;
     state.items = [];
     resetPdfLink();
     render();
@@ -292,11 +300,13 @@
   }
 
   async function loadProjectFile(file) {
+    const revision = ++state.collectionRevision;
     setStatus(`Loading state from ${file.name}...`);
 
     try {
       const project = JSON.parse(await file.text());
       const loaded = await readProjectData(project);
+      if (revision !== state.collectionRevision) return;
 
       applyProjectSettings(loaded.settings);
       state.items = loaded.items;
@@ -305,7 +315,9 @@
       render();
       setStatus(`Loaded ${state.items.length} ${state.items.length === 1 ? "image" : "images"} from ${file.name}.`);
     } catch (error) {
-      setStatus(`Could not load state: ${error.message}`, "error");
+      if (revision === state.collectionRevision) {
+        setStatus(`Could not load state: ${error.message}`, "error");
+      }
     }
   }
 
@@ -444,6 +456,7 @@
   }
 
   function readQuantity(value) {
+    if (value === "" || value === null || value === undefined) return 1;
     const quantity = Math.floor(Number(value));
     if (!Number.isFinite(quantity) || quantity < 0) return 1;
     return Math.min(quantity, 999);
@@ -622,7 +635,7 @@
       return;
     }
 
-    els.generatePdf.disabled = false;
+    els.generatePdf.disabled = state.generatingPdf;
     const standeeCount = getTotalQuantity();
     const printableCount = layout.partCount;
     const pieceWord = printableCount === 1 ? "piece" : "pieces";
@@ -715,15 +728,18 @@
   }
 
   async function handleGeneratePdf() {
+    if (state.generatingPdf) return;
     resetPdfLink();
+    const revision = state.pdfRevision;
     const settings = readSettings();
-    const layout = packLayout(state.items, settings);
+    const layout = packLayout(state.items.map((item) => ({ ...item })), settings);
 
     if (!layout.ok) {
       refreshLayoutPreview();
       return;
     }
 
+    state.generatingPdf = true;
     const previousLabel = els.generatePdf.textContent;
     els.generatePdf.disabled = true;
     els.generatePdf.textContent = "Generating...";
@@ -736,6 +752,7 @@
         const part = uniqueParts[index];
         setStatus(`Rendering ${index + 1} of ${uniqueParts.length}: ${part.item.fileName}`);
         rendered.set(part.renderKey, await renderPartForPdf(part, settings.renderDpi, settings.drawGuides));
+        if (revision !== state.pdfRevision) return;
       }
 
       setStatus("Writing PDF...");
@@ -746,8 +763,12 @@
       els.downloadLink.hidden = false;
       setStatus(`PDF ready: ${formatBytes(pdfBlob.size)}.`);
     } catch (error) {
-      setStatus(`Could not create PDF: ${error.message}`, "error");
+      if (revision === state.pdfRevision) {
+        setStatus(`Could not create PDF: ${error.message}`, "error");
+      }
     } finally {
+      state.generatingPdf = false;
+      if (revision !== state.pdfRevision) refreshLayoutPreview();
       els.generatePdf.textContent = previousLabel;
       els.generatePdf.disabled = !packLayout(state.items, readSettings()).ok;
     }
@@ -1551,6 +1572,8 @@
     const fallbackItems = new Set();
     const impossiblePlans = [];
     items.forEach((item, index) => {
+      const quantity = getQuantity(item);
+      if (quantity === 0) return;
       const plan = getItemPlan(item, index, settings);
       if (!plan.ok) {
         impossiblePlans.push(plan.impossible);
@@ -1559,7 +1582,6 @@
       if (plan.mode !== "normal") {
         fallbackItems.add(item.id);
       }
-      const quantity = getQuantity(item);
       for (let copyIndex = 0; copyIndex < quantity; copyIndex += 1) {
         boxes.push(...plan.makeParts(copyIndex + 1));
       }
@@ -1570,6 +1592,17 @@
         ok: false,
         message: `${impossiblePlans.length} image(s) are too tall to fit, even with fallback layouts.`,
         impossible: impossiblePlans,
+        pages: [],
+        usableWidth,
+        usableHeight,
+      };
+    }
+
+    if (boxes.length === 0) {
+      return {
+        ok: false,
+        message: "No printable pieces. Add an image with a positive quantity.",
+        impossible: [],
         pages: [],
         usableWidth,
         usableHeight,
@@ -1604,7 +1637,7 @@
       let best = null;
 
       for (let pageIndex = 0; pageIndex < pages.length; pageIndex += 1) {
-        const candidate = findBestPlacement(pages[pageIndex], box, settings.allowRotate);
+        const candidate = findBestPlacement(pages[pageIndex], box, settings.allowRotate, settings.spacing);
         if (!candidate) continue;
         candidate.pageIndex = pageIndex;
         if (!best || compareScores(candidate.score, best.score) < 0) {
@@ -1614,15 +1647,21 @@
 
       if (!best) {
         const page = {
-          free: [{ x: 0, y: 0, width: usableWidth, height: usableHeight }],
+          // Pack trailing spacing too; the extra strip is outside the printable area.
+          free: [{
+            x: 0,
+            y: 0,
+            width: usableWidth + settings.spacing,
+            height: usableHeight + settings.spacing,
+          }],
           placements: [],
         };
         pages.push(page);
-        best = findBestPlacement(page, box, settings.allowRotate);
+        best = findBestPlacement(page, box, settings.allowRotate, settings.spacing);
         best.pageIndex = pages.length - 1;
       }
 
-      placeBox(pages[best.pageIndex], box, best, settings.spacing, usableWidth, usableHeight);
+      placeBox(pages[best.pageIndex], box, best, settings.spacing);
     }
 
     return {
@@ -1636,7 +1675,7 @@
     };
   }
 
-  function findBestPlacement(page, box, allowRotate) {
+  function findBestPlacement(page, box, allowRotate, spacing) {
     let best = null;
 
     for (let freeIndex = 0; freeIndex < page.free.length; freeIndex += 1) {
@@ -1648,12 +1687,12 @@
       }
 
       for (const orientation of orientations) {
-        if (orientation.width > free.width + EPS || orientation.height > free.height + EPS) {
+        if (orientation.width + spacing > free.width + EPS || orientation.height + spacing > free.height + EPS) {
           continue;
         }
 
-        const leftoverWidth = free.width - orientation.width;
-        const leftoverHeight = free.height - orientation.height;
+        const leftoverWidth = free.width - orientation.width - spacing;
+        const leftoverHeight = free.height - orientation.height - spacing;
         const score = [
           Math.min(leftoverWidth, leftoverHeight),
           Math.max(leftoverWidth, leftoverHeight),
@@ -1687,12 +1726,12 @@
     return 0;
   }
 
-  function placeBox(page, box, placement, spacing, usableWidth, usableHeight) {
+  function placeBox(page, box, placement, spacing) {
     const occupied = {
       x: placement.x,
       y: placement.y,
-      width: Math.min(placement.width + spacing, usableWidth - placement.x),
-      height: Math.min(placement.height + spacing, usableHeight - placement.y),
+      width: placement.width + spacing,
+      height: placement.height + spacing,
     };
 
     const nextFree = [];
@@ -1776,7 +1815,9 @@
 
       for (let otherIndex = 0; otherIndex < clean.length; otherIndex += 1) {
         if (index === otherIndex) continue;
-        if (containsRect(clean[otherIndex], rect)) {
+        // Equal regions keep their first occurrence instead of removing each other.
+        if (containsRect(clean[otherIndex], rect) &&
+            (otherIndex < index || !containsRect(rect, clean[otherIndex]))) {
           contained = true;
           break;
         }
@@ -1972,6 +2013,7 @@
   }
 
   function resetPdfLink() {
+    state.pdfRevision += 1;
     if (state.pdfUrl) {
       URL.revokeObjectURL(state.pdfUrl);
       state.pdfUrl = "";

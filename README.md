@@ -32,3 +32,7 @@ If the normal piece is too tall for the printable A4 area, the app automatically
 - The layout uses a fast rectangle-packing heuristic and reports an error when a piece cannot fit on the printable area by itself.
 - Uploaded images are flattened onto a white background when rendered into the PDF.
 - PDF rendering defaults to 600 DPI and uses progressive downsampling and mild sharpening for cleaner output.
+
+## Checks
+
+Run `node tests/app.test.cjs` with Node.js 18 or newer. The dependency-free regression checks cover packing boundaries and spacing, quantity defaults, empty layouts, PDF generation lifecycle, and overlapping state loads. Browser rendering and image decoding still need a browser smoke test.
