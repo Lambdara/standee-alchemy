@@ -4,15 +4,21 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-function loadApp() {
+function loadApp({ storage = new Map(), storageBlocked = false } = {}) {
   const elements = new Map();
   const makeElement = () => ({
     style: {}, children: [], hidden: true,
     append(...children) { this.children.push(...children); },
-    addEventListener() {}, removeAttribute() {}, classList: { toggle() {} },
+    listeners: {},
+    addEventListener(type, listener) { (this.listeners[type] ||= []).push(listener); },
+    removeAttribute() {}, classList: { toggle() {} },
   });
   const context = vm.createContext({
     Blob, TextEncoder, Uint8Array, setTimeout,
+    localStorage: {
+      getItem(key) { if (storageBlocked) throw new Error('blocked'); return storage.get(key) ?? null; },
+      setItem(key, value) { if (storageBlocked) throw new Error('blocked'); storage.set(key, value); },
+    },
     URL: { createObjectURL: () => 'blob:test', revokeObjectURL() {} },
     document: {
       createElement: makeElement, createDocumentFragment: makeElement,
@@ -27,6 +33,7 @@ function loadApp() {
   const source = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8')
     .replace(/\}\)\(\);\s*$/, `globalThis.app = {
       pruneFreeRects, packLayout, readQuantity, handleGeneratePdf,
+      applyProjectSettings, makeProjectData, readSettings,
       resetPdfLink, refreshLayoutPreview, loadProjectFile, clearAllItems, state, els,
       setRenderer(renderer) { renderPartForPdf = renderer; }
     }; })();`);
@@ -153,4 +160,89 @@ test('a slower state load cannot overwrite a newer one', async () => {
   await older;
   assert.equal(app.els.margin.value, '0.5');
   assert.match(app.els.status.textContent, /new.json/);
+});
+
+const paperCutterKey = 'standee-alchemy.optimizeForPaperCutters';
+
+test('paper cutter preference defaults off and persists both checkbox states', () => {
+  const storage = new Map();
+  let app = loadApp({ storage });
+  assert.equal(app.readSettings().optimizeForPaperCutters, false);
+  for (const checked of [true, false]) {
+    app.els.optimizeForPaperCutters.checked = checked;
+    for (const listener of app.els.optimizeForPaperCutters.listeners.change) listener();
+    assert.equal(storage.get(paperCutterKey), String(checked));
+    app = loadApp({ storage });
+    assert.equal(app.readSettings().optimizeForPaperCutters, checked);
+  }
+});
+
+test('blocked local storage still allows paper cutter packing', () => {
+  const app = loadApp({ storageBlocked: true });
+  assert.equal(app.readSettings().optimizeForPaperCutters, false);
+  app.els.optimizeForPaperCutters.checked = true;
+  for (const listener of app.els.optimizeForPaperCutters.listeners.change) listener();
+  assert.equal(app.packLayout([item(1, 1, 1)], app.readSettings()).ok, true);
+});
+
+test('paper cutter preference round trips in projects and old projects use original packing', () => {
+  const storage = new Map();
+  const app = loadApp({ storage });
+  app.applyProjectSettings({ optimizeForPaperCutters: true });
+  assert.equal(app.makeProjectData().settings.optimizeForPaperCutters, true);
+  assert.equal(storage.get(paperCutterKey), 'true');
+  app.applyProjectSettings({});
+  assert.equal(app.readSettings().optimizeForPaperCutters, false);
+  assert.equal(storage.get(paperCutterKey), 'false');
+});
+
+// Verify that a sequence of cuts can separate every piece: each cut must span
+// the current fragment and pass through no piece interior. Recursing permits
+// cuts that cannot span the original page, including mixed nested subdivisions.
+function canSeparateWithStraightCuts(pieces) {
+  if (pieces.length <= 1) return true;
+  for (const [position, size] of [['x', 'width'], ['y', 'height']]) {
+    const edges = new Set(pieces.flatMap(p => [p[position], p[position] + p[size]]));
+    for (const cut of edges) {
+      const before = pieces.filter(p => p[position] + p[size] <= cut + 1e-6);
+      const after = pieces.filter(p => p[position] >= cut - 1e-6);
+      if (!before.length || !after.length || before.length + after.length !== pieces.length) continue;
+      if (canSeparateWithStraightCuts(before) && canSeparateWithStraightCuts(after)) return true;
+    }
+  }
+  return false;
+}
+
+test('paper cutter layouts allow recursive straight cuts, preserve spacing and stay on page', () => {
+  const app = loadApp();
+  let seed = 117;
+  const random = () => ((seed = (1664525 * seed + 1013904223) >>> 0) / 2 ** 32);
+  for (let trial = 0; trial < 100; trial++) {
+    const items = Array.from({ length: 15 }, (_, id) =>
+      item(id, [0.5, 1, 2, 3, 4][Math.floor(random() * 5)], 0.4 + random() * 1.4, 1 + id % 3));
+    const trialSettings = { ...settings, optimizeForPaperCutters: true,
+      spacing: [0, 0.01, 0.3, 0.5][trial % 4],
+      allowRotate: trial % 2 === 0, margin: [0, 0.2, 1.5][trial % 3] };
+    const layout = app.packLayout(items, trialSettings);
+    assert.equal(layout.ok, true);
+    for (const page of layout.pages) {
+      assert.ok(canSeparateWithStraightCuts(page.placements), `Uncuttable page in trial ${trial}`);
+      for (const [index, a] of page.placements.entries()) {
+        assert.ok(a.x >= 0 && a.y >= 0 && a.x + a.width <= layout.usableWidth + 1e-6 && a.y + a.height <= layout.usableHeight + 1e-6);
+        if (!trialSettings.allowRotate) assert.equal(a.rotated, false);
+        for (const b of page.placements.slice(index + 1)) {
+          const gapX = Math.max(b.x - a.x - a.width, a.x - b.x - b.width);
+          const gapY = Math.max(b.y - a.y - a.height, a.y - b.y - b.height);
+          assert.ok(Math.max(gapX, gapY) >= trialSettings.spacing - 1e-6);
+        }
+      }
+    }
+  }
+});
+
+test('unchecked paper cutter mode preserves the original layout', () => {
+  const app = loadApp();
+  const items = [item(1, 1, 1, 7), item(2, 2, 1.2, 3), item(3, 3, 2)];
+  assert.deepEqual(app.packLayout(items, { ...settings, optimizeForPaperCutters: false }),
+    app.packLayout(items, settings));
 });

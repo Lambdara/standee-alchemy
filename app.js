@@ -4,6 +4,7 @@
   const A4_PAGE = { key: "a4", label: "A4", width: 8.27, height: 11.69 };
   const PROJECT_FORMAT = "standee-alchemy";
   const PROJECT_VERSION = 1;
+  const PAPER_CUTTER_STORAGE_KEY = "standee-alchemy.optimizeForPaperCutters";
 
   const WIDTH_OPTIONS = [
     { value: 0.5, label: "1/2 inch" },
@@ -48,6 +49,7 @@
     spacing: document.querySelector("#spacing"),
     renderDpi: document.querySelector("#renderDpi"),
     allowRotate: document.querySelector("#allowRotate"),
+    optimizeForPaperCutters: document.querySelector("#optimizeForPaperCutters"),
     drawGuides: document.querySelector("#drawGuides"),
     applyWidth: document.querySelector("#applyWidth"),
     clearAll: document.querySelector("#clearAll"),
@@ -119,7 +121,16 @@
     removeItem(button.dataset.removeItem);
   });
 
-  [els.margin, els.spacing, els.allowRotate, els.drawGuides].forEach((control) => {
+  // Storage can be unavailable for local files or when browser storage is blocked.
+  try {
+    els.optimizeForPaperCutters.checked = localStorage.getItem(PAPER_CUTTER_STORAGE_KEY) === "true";
+  } catch {
+    els.optimizeForPaperCutters.checked = false;
+  }
+
+  els.optimizeForPaperCutters.addEventListener("change", savePaperCutterPreference);
+
+  [els.margin, els.spacing, els.allowRotate, els.drawGuides, els.optimizeForPaperCutters].forEach((control) => {
     control.addEventListener("change", () => {
       resetPdfLink();
       render();
@@ -132,6 +143,14 @@
   });
 
   render();
+
+  function savePaperCutterPreference() {
+    try {
+      localStorage.setItem(PAPER_CUTTER_STORAGE_KEY, String(els.optimizeForPaperCutters.checked));
+    } catch {
+      // Packing still works when persistence is unavailable.
+    }
+  }
 
   async function handleFilesChosen(event) {
     await addFiles(event.target.files || []);
@@ -334,6 +353,7 @@
         spacing: settings.spacing,
         renderDpi: settings.renderDpi,
         allowRotate: settings.allowRotate,
+        optimizeForPaperCutters: settings.optimizeForPaperCutters,
         drawGuides: settings.drawGuides,
       },
       items: state.items.map(makeProjectItemData),
@@ -399,6 +419,8 @@
     setSelectValue(els.renderDpi, renderDpi, "600");
 
     els.allowRotate.checked = settings.allowRotate !== false;
+    els.optimizeForPaperCutters.checked = settings.optimizeForPaperCutters === true;
+    savePaperCutterPreference();
     els.drawGuides.checked = settings.drawGuides !== false;
   }
 
@@ -794,6 +816,7 @@
       spacing: clamp(readNumber(els.spacing, 0), 0, 0.5),
       renderDpi: clamp(Math.round(readNumber(els.renderDpi, 600)), 72, 1200),
       allowRotate: els.allowRotate.checked,
+      optimizeForPaperCutters: els.optimizeForPaperCutters.checked,
       drawGuides: els.drawGuides.checked,
     };
   }
@@ -1661,7 +1684,7 @@
         best.pageIndex = pages.length - 1;
       }
 
-      placeBox(pages[best.pageIndex], box, best, settings.spacing);
+      placeBox(pages[best.pageIndex], box, best, settings.spacing, settings.optimizeForPaperCutters);
     }
 
     return {
@@ -1726,7 +1749,7 @@
     return 0;
   }
 
-  function placeBox(page, box, placement, spacing) {
+  function placeBox(page, box, placement, spacing, optimizeForPaperCutters = false) {
     const occupied = {
       x: placement.x,
       y: placement.y,
@@ -1734,12 +1757,16 @@
       height: placement.height + spacing,
     };
 
-    const nextFree = [];
-    for (const rect of page.free) {
-      splitFreeRect(rect, occupied, nextFree);
+    if (optimizeForPaperCutters) {
+      const [fragment] = page.free.splice(placement.freeIndex, 1);
+      page.free.push(...splitCutFragment(fragment, occupied));
+    } else {
+      const nextFree = [];
+      for (const rect of page.free) {
+        splitFreeRect(rect, occupied, nextFree);
+      }
+      page.free = pruneFreeRects(nextFree);
     }
-
-    page.free = pruneFreeRects(nextFree);
     page.placements.push({
       part: box,
       item: box.item,
@@ -1755,6 +1782,31 @@
       height: placement.height,
       rotated: placement.rotated,
     });
+  }
+
+  function splitCutFragment(fragment, occupied) {
+    const remainingWidth = fragment.width - occupied.width;
+    const remainingHeight = fragment.height - occupied.height;
+
+    // Each free rectangle is an actual fragment, never an overlapping candidate.
+    // Cut across its shorter leftover axis first, keeping the larger remainder
+    // whole. The second cut only crosses the strip containing the new piece.
+    // Trailing spacing is waste trimmed from the piece after these two cuts.
+    const horizontalFirst = remainingWidth <= remainingHeight;
+    return [
+      {
+        x: fragment.x + occupied.width,
+        y: fragment.y,
+        width: remainingWidth,
+        height: horizontalFirst ? occupied.height : fragment.height,
+      },
+      {
+        x: fragment.x,
+        y: fragment.y + occupied.height,
+        width: horizontalFirst ? fragment.width : occupied.width,
+        height: remainingHeight,
+      },
+    ].filter((rect) => rect.width > EPS && rect.height > EPS);
   }
 
   function splitFreeRect(free, used, output) {

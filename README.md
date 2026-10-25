@@ -9,6 +9,8 @@ Use Save State and Load State to export and restore a `.standee-alchemy.json` fi
 
 Print the PDF at actual size / 100% scale. The page margin setting reserves space for printers that cannot print to the edge.
 
+Enable **Optimize for paper cutters** to arrange pieces for straight cuts across a page or an already cut fragment. This can use more pages. The checkbox is off by default, remembered in this browser, and included in saved state files. With it off, the original packing method is used.
+
 ## Output Shape
 
 For each image, the app creates one vertical piece:
