@@ -1137,8 +1137,10 @@
       ctx.font = `${fontSize}px sans-serif`;
     }
     const bounds = ctx.measureText(name);
-    const x = width / 2 + (bounds.actualBoundingBoxLeft - bounds.actualBoundingBoxRight) / 2;
-    const y = top + height / 2 + (bounds.actualBoundingBoxAscent - bounds.actualBoundingBoxDescent) / 2;
+    ctx.translate(width / 2, top + height / 2);
+    ctx.rotate(Math.PI);
+    const x = (bounds.actualBoundingBoxLeft - bounds.actualBoundingBoxRight) / 2;
+    const y = (bounds.actualBoundingBoxAscent - bounds.actualBoundingBoxDescent) / 2;
     ctx.fillText(name, x, y);
     ctx.restore();
   }
