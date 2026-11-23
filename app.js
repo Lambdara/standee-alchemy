@@ -4,7 +4,6 @@
   const A4_PAGE = { key: "a4", label: "A4", width: 8.27, height: 11.69 };
   const PROJECT_FORMAT = "standee-alchemy";
   const PROJECT_VERSION = 1;
-  const PAPER_CUTTER_STORAGE_KEY = "standee-alchemy.optimizeForPaperCutters";
 
   const WIDTH_OPTIONS = [
     { value: 0.5, label: "1/2 inch" },
@@ -49,7 +48,6 @@
     spacing: document.querySelector("#spacing"),
     renderDpi: document.querySelector("#renderDpi"),
     allowRotate: document.querySelector("#allowRotate"),
-    optimizeForPaperCutters: document.querySelector("#optimizeForPaperCutters"),
     drawGuides: document.querySelector("#drawGuides"),
     applyWidth: document.querySelector("#applyWidth"),
     clearAll: document.querySelector("#clearAll"),
@@ -121,16 +119,7 @@
     removeItem(button.dataset.removeItem);
   });
 
-  // Storage can be unavailable for local files or when browser storage is blocked.
-  try {
-    els.optimizeForPaperCutters.checked = localStorage.getItem(PAPER_CUTTER_STORAGE_KEY) === "true";
-  } catch {
-    els.optimizeForPaperCutters.checked = false;
-  }
-
-  els.optimizeForPaperCutters.addEventListener("change", savePaperCutterPreference);
-
-  [els.margin, els.spacing, els.allowRotate, els.drawGuides, els.optimizeForPaperCutters].forEach((control) => {
+  [els.margin, els.spacing, els.allowRotate, els.drawGuides].forEach((control) => {
     control.addEventListener("change", () => {
       resetPdfLink();
       render();
@@ -143,14 +132,6 @@
   });
 
   render();
-
-  function savePaperCutterPreference() {
-    try {
-      localStorage.setItem(PAPER_CUTTER_STORAGE_KEY, String(els.optimizeForPaperCutters.checked));
-    } catch {
-      // Packing still works when persistence is unavailable.
-    }
-  }
 
   async function handleFilesChosen(event) {
     await addFiles(event.target.files || []);
@@ -353,7 +334,6 @@
         spacing: settings.spacing,
         renderDpi: settings.renderDpi,
         allowRotate: settings.allowRotate,
-        optimizeForPaperCutters: settings.optimizeForPaperCutters,
         drawGuides: settings.drawGuides,
       },
       items: state.items.map(makeProjectItemData),
@@ -419,8 +399,6 @@
     setSelectValue(els.renderDpi, renderDpi, "600");
 
     els.allowRotate.checked = settings.allowRotate !== false;
-    els.optimizeForPaperCutters.checked = settings.optimizeForPaperCutters === true;
-    savePaperCutterPreference();
     els.drawGuides.checked = settings.drawGuides !== false;
   }
 
@@ -816,7 +794,6 @@
       spacing: clamp(readNumber(els.spacing, 0), 0, 0.5),
       renderDpi: clamp(Math.round(readNumber(els.renderDpi, 600)), 72, 1200),
       allowRotate: els.allowRotate.checked,
-      optimizeForPaperCutters: els.optimizeForPaperCutters.checked,
       drawGuides: els.drawGuides.checked,
     };
   }
@@ -1686,7 +1663,7 @@
         best.pageIndex = pages.length - 1;
       }
 
-      placeBox(pages[best.pageIndex], box, best, settings.spacing, settings.optimizeForPaperCutters);
+      placeBox(pages[best.pageIndex], box, best, settings.spacing);
     }
 
     return {
@@ -1751,7 +1728,7 @@
     return 0;
   }
 
-  function placeBox(page, box, placement, spacing, optimizeForPaperCutters = false) {
+  function placeBox(page, box, placement, spacing) {
     const occupied = {
       x: placement.x,
       y: placement.y,
@@ -1759,16 +1736,8 @@
       height: placement.height + spacing,
     };
 
-    if (optimizeForPaperCutters) {
-      const [fragment] = page.free.splice(placement.freeIndex, 1);
-      page.free.push(...splitCutFragment(fragment, occupied));
-    } else {
-      const nextFree = [];
-      for (const rect of page.free) {
-        splitFreeRect(rect, occupied, nextFree);
-      }
-      page.free = pruneFreeRects(nextFree);
-    }
+    const [fragment] = page.free.splice(placement.freeIndex, 1);
+    page.free.push(...splitCutFragment(fragment, occupied));
     page.placements.push({
       part: box,
       item: box.item,
@@ -1809,96 +1778,6 @@
         height: remainingHeight,
       },
     ].filter((rect) => rect.width > EPS && rect.height > EPS);
-  }
-
-  function splitFreeRect(free, used, output) {
-    if (!rectsOverlap(free, used)) {
-      output.push(free);
-      return;
-    }
-
-    const freeRight = free.x + free.width;
-    const freeBottom = free.y + free.height;
-    const usedRight = used.x + used.width;
-    const usedBottom = used.y + used.height;
-
-    if (used.x > free.x + EPS) {
-      output.push({
-        x: free.x,
-        y: free.y,
-        width: used.x - free.x,
-        height: free.height,
-      });
-    }
-
-    if (usedRight < freeRight - EPS) {
-      output.push({
-        x: usedRight,
-        y: free.y,
-        width: freeRight - usedRight,
-        height: free.height,
-      });
-    }
-
-    if (used.y > free.y + EPS) {
-      output.push({
-        x: free.x,
-        y: free.y,
-        width: free.width,
-        height: used.y - free.y,
-      });
-    }
-
-    if (usedBottom < freeBottom - EPS) {
-      output.push({
-        x: free.x,
-        y: usedBottom,
-        width: free.width,
-        height: freeBottom - usedBottom,
-      });
-    }
-  }
-
-  function pruneFreeRects(rects) {
-    const clean = rects.filter((rect) => rect.width > EPS && rect.height > EPS);
-    const result = [];
-
-    for (let index = 0; index < clean.length; index += 1) {
-      const rect = clean[index];
-      let contained = false;
-
-      for (let otherIndex = 0; otherIndex < clean.length; otherIndex += 1) {
-        if (index === otherIndex) continue;
-        // Equal regions keep their first occurrence instead of removing each other.
-        if (containsRect(clean[otherIndex], rect) &&
-            (otherIndex < index || !containsRect(rect, clean[otherIndex]))) {
-          contained = true;
-          break;
-        }
-      }
-
-      if (!contained) result.push(rect);
-    }
-
-    return result;
-  }
-
-  function rectsOverlap(a, b) {
-    return (
-      a.x < b.x + b.width - EPS &&
-      a.x + a.width > b.x + EPS &&
-      a.y < b.y + b.height - EPS &&
-      a.y + a.height > b.y + EPS
-    );
-  }
-
-  function containsRect(outer, inner) {
-    return (
-      inner.x >= outer.x - EPS &&
-      inner.y >= outer.y - EPS &&
-      inner.x + inner.width <= outer.x + outer.width + EPS &&
-      inner.y + inner.height <= outer.y + outer.height + EPS
-    );
   }
 
   function createPdfBlob(layout, rendered, settings) {

@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-function loadApp({ storage = new Map(), storageBlocked = false } = {}) {
+function loadApp() {
   const elements = new Map();
   const makeElement = () => ({
     style: {}, children: [], hidden: true,
@@ -15,10 +15,6 @@ function loadApp({ storage = new Map(), storageBlocked = false } = {}) {
   });
   const context = vm.createContext({
     Blob, TextEncoder, Uint8Array, setTimeout,
-    localStorage: {
-      getItem(key) { if (storageBlocked) throw new Error('blocked'); return storage.get(key) ?? null; },
-      setItem(key, value) { if (storageBlocked) throw new Error('blocked'); storage.set(key, value); },
-    },
     URL: { createObjectURL: () => 'blob:test', revokeObjectURL() {} },
     document: {
       createElement: makeElement, createDocumentFragment: makeElement,
@@ -32,7 +28,7 @@ function loadApp({ storage = new Map(), storageBlocked = false } = {}) {
   });
   const source = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8')
     .replace(/\}\)\(\);\s*$/, `globalThis.app = {
-      pruneFreeRects, packLayout, readQuantity, handleGeneratePdf,
+      packLayout, readQuantity, handleGeneratePdf,
       applyProjectSettings, makeProjectData, readSettings,
       resetPdfLink, refreshLayoutPreview, loadProjectFile, clearAllItems, state, els,
       setRenderer(renderer) { renderPartForPdf = renderer; }
@@ -46,12 +42,6 @@ function item(id, width, ratio, quantity = 1) {
   return { id: String(id), fileName: `creature-${id}.png`, widthInches: width,
     naturalWidth: 100, naturalHeight: ratio * 100, quantity, scalePercent: 100 };
 }
-
-test('equal free rectangles retain one usable region', () => {
-  const app = loadApp();
-  const rect = { x: 0, y: 0, width: 3, height: 4 };
-  assert.equal(app.pruneFreeRects([rect, { ...rect }]).length, 1);
-});
 
 test('packed pieces respect page boundaries and requested spacing', () => {
   const app = loadApp();
@@ -162,40 +152,6 @@ test('a slower state load cannot overwrite a newer one', async () => {
   assert.match(app.els.status.textContent, /new.json/);
 });
 
-const paperCutterKey = 'standee-alchemy.optimizeForPaperCutters';
-
-test('paper cutter preference defaults off and persists both checkbox states', () => {
-  const storage = new Map();
-  let app = loadApp({ storage });
-  assert.equal(app.readSettings().optimizeForPaperCutters, false);
-  for (const checked of [true, false]) {
-    app.els.optimizeForPaperCutters.checked = checked;
-    for (const listener of app.els.optimizeForPaperCutters.listeners.change) listener();
-    assert.equal(storage.get(paperCutterKey), String(checked));
-    app = loadApp({ storage });
-    assert.equal(app.readSettings().optimizeForPaperCutters, checked);
-  }
-});
-
-test('blocked local storage still allows paper cutter packing', () => {
-  const app = loadApp({ storageBlocked: true });
-  assert.equal(app.readSettings().optimizeForPaperCutters, false);
-  app.els.optimizeForPaperCutters.checked = true;
-  for (const listener of app.els.optimizeForPaperCutters.listeners.change) listener();
-  assert.equal(app.packLayout([item(1, 1, 1)], app.readSettings()).ok, true);
-});
-
-test('paper cutter preference round trips in projects and old projects use original packing', () => {
-  const storage = new Map();
-  const app = loadApp({ storage });
-  app.applyProjectSettings({ optimizeForPaperCutters: true });
-  assert.equal(app.makeProjectData().settings.optimizeForPaperCutters, true);
-  assert.equal(storage.get(paperCutterKey), 'true');
-  app.applyProjectSettings({});
-  assert.equal(app.readSettings().optimizeForPaperCutters, false);
-  assert.equal(storage.get(paperCutterKey), 'false');
-});
-
 // Verify that a sequence of cuts can separate every piece: each cut must span
 // the current fragment and pass through no piece interior. Recursing permits
 // cuts that cannot span the original page, including mixed nested subdivisions.
@@ -220,7 +176,7 @@ test('paper cutter layouts allow recursive straight cuts, preserve spacing and s
   for (let trial = 0; trial < 100; trial++) {
     const items = Array.from({ length: 15 }, (_, id) =>
       item(id, [0.5, 1, 2, 3, 4][Math.floor(random() * 5)], 0.4 + random() * 1.4, 1 + id % 3));
-    const trialSettings = { ...settings, optimizeForPaperCutters: true,
+    const trialSettings = { ...settings,
       spacing: [0, 0.01, 0.3, 0.5][trial % 4],
       allowRotate: trial % 2 === 0, margin: [0, 0.2, 1.5][trial % 3] };
     const layout = app.packLayout(items, trialSettings);
@@ -240,9 +196,20 @@ test('paper cutter layouts allow recursive straight cuts, preserve spacing and s
   }
 });
 
-test('unchecked paper cutter mode preserves the original layout', () => {
+test('saved projects always use straight-cut packing and omit the retired preference', () => {
   const app = loadApp();
   const items = [item(1, 1, 1, 7), item(2, 2, 1.2, 3), item(3, 3, 2)];
-  assert.deepEqual(app.packLayout(items, { ...settings, optimizeForPaperCutters: false }),
-    app.packLayout(items, settings));
+  app.applyProjectSettings({});
+  const expected = app.packLayout(items, app.readSettings());
+  assert.equal(expected.ok, true);
+  for (const savedValue of [undefined, false, true]) {
+    app.applyProjectSettings({ optimizeForPaperCutters: savedValue });
+    assert.equal(Object.hasOwn(app.readSettings(), 'optimizeForPaperCutters'), false);
+    assert.equal(Object.hasOwn(app.makeProjectData().settings, 'optimizeForPaperCutters'), false);
+    const layout = app.packLayout(items, app.readSettings());
+    assert.deepEqual(layout, expected);
+    for (const page of layout.pages) {
+      assert.ok(canSeparateWithStraightCuts(page.placements));
+    }
+  }
 });
